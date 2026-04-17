@@ -24,6 +24,8 @@ import json
 from typing import Any
 
 from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from unclog import __version__
 from unclog.findings import detect as detect_findings
@@ -33,6 +35,7 @@ from unclog.scan.session import SessionSystemBlock
 from unclog.scan.tokens import TiktokenCounter, TokenCounter
 from unclog.state import InstallationState, tier_for_baseline
 from unclog.ui.hero import render_hero, render_treemap
+from unclog.ui.theme import ACCENT, DIM, SEVERITY_LEAN
 from unclog.ui.wordmark import wordmark
 from unclog.util.paths import ClaudePaths
 
@@ -42,6 +45,18 @@ SCHEMA_ID = "unclog.v0.1"
 # ``mcp__<server>__<tool>``. Built-in tools (Read, Write, Bash, etc.)
 # do not carry this prefix.
 _MCP_TOOL_PREFIX = "mcp__"
+
+# Category colours — deliberately mirror the picker's badge palette so
+# the user sees the same colour for "skill" in the scan summary and in
+# the picker, and their eye learns the taxonomy across screens.
+_INVENTORY_CHIP_COLOUR: dict[str, str] = {
+    "skills": "#22c55e",
+    "agents": "#38bdf8",
+    "commands": "#a78bfa",
+    "plugins": "#e879f9",
+    "mcp": "#fb923c",
+    "projects": "#a3a3a3",
+}
 
 
 def _mcp_attribution(session: SessionSystemBlock, counter: TokenCounter) -> dict[str, int]:
@@ -463,19 +478,40 @@ def render_rich(
     if report["composition"]:
         console.print(render_treemap(report["composition"]))
         console.print("")
-    console.print(
-        "[dim]"
-        f"{inv['skills']} skills · {inv['agents']} agents · "
-        f"{inv['commands']} commands · {inv['plugins']} plugins · "
-        f"{_mcp_label(inv)} · "
-        f"{inv['projects_known']} known projects"
-        "[/dim]"
-    )
+    console.print(_render_inventory_chips(inv))
     _render_findings_rich(report["findings"], console)
     if report["warnings"]:
         console.print("")
         for warning in report["warnings"]:
             console.print(f"[#eab308]![/#eab308] [dim]{warning}[/dim]")
+
+
+def _render_inventory_chips(inv: dict[str, int]) -> Text:
+    """Render the inventory line as coloured category chips.
+
+    Each chip is ``● LABEL N`` with the dot and count in the category
+    colour and the label dim. Shares the palette with the picker so the
+    user's eye learns the taxonomy once and carries it everywhere.
+    """
+    chips: list[tuple[str, str, int]] = [
+        ("skills", "skills", inv["skills"]),
+        ("agents", "agents", inv["agents"]),
+        ("commands", "commands", inv["commands"]),
+        ("plugins", "plugins", inv["plugins"]),
+    ]
+    mcp_label = _mcp_label(inv).replace(f"{inv['mcp_servers']} ", "", 1)
+    chips.append(("mcp", mcp_label, inv["mcp_servers"]))
+    chips.append(("projects", "known projects", inv["projects_known"]))
+
+    text = Text()
+    for i, (key, label, value) in enumerate(chips):
+        colour = _INVENTORY_CHIP_COLOUR.get(key, DIM)
+        if i:
+            text.append("   ", style=DIM)
+        text.append("● ", style=colour)
+        text.append(f"{value} ", style=f"bold {colour}")
+        text.append(label, style=DIM)
+    return text
 
 
 def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> None:
@@ -485,50 +521,82 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
     builds printed 180+ static ``[x]``-marker lines before the
     interactive picker fired, which (a) looked like a checkbox UI but
     wasn't, (b) scrolled the real picker off-screen, and (c) duplicated
-    what the picker already shows. We now print:
+    what the picker already shows. We now print a compact Rich panel
+    with counts, the flag_only (informational) list, and a picker teaser
+    — all framed so the block reads as a single unit of information.
 
-    - a one-line summary with counts + removable-token total, and
-    - the flag_only (informational) block inline, since those are the
-      only findings the interactive flow doesn't render itself.
-
-    The ``interactive picker below`` teaser is a reminder that the real
-    UI comes next. In ``--report`` mode (no interactive follow-up) the
-    caller suppresses this via ``--plain``/``--report`` paths which
-    route through :func:`render_plain` instead.
+    In ``--report`` mode (no interactive follow-up) the caller
+    suppresses this via ``--plain``/``--report`` paths which route
+    through :func:`render_plain` instead.
     """
     console.print("")
     if not findings:
-        console.print("[dim]findings: none — nothing to clean up right now[/dim]")
+        console.print(
+            Panel(
+                Text("No issues found — your install is already lean.", style=DIM),
+                border_style=SEVERITY_LEAN,
+                padding=(0, 2),
+            )
+        )
         return
+
     removable = [f for f in findings if f.get("action", {}).get("primitive") != "flag_only"]
     informational = [f for f in findings if f.get("action", {}).get("primitive") == "flag_only"]
-
     removable_tokens = sum(f.get("token_savings") or 0 for f in removable)
-    parts = []
+
+    header = Text()
+    header.append(f"{len(findings)}", style=f"bold {ACCENT}")
+    header.append(" issue(s) found", style=DIM)
     if removable:
-        token_fragment = f" (~{removable_tokens:,} tok)" if removable_tokens else ""
-        parts.append(f"[#22c55e]{len(removable)} removable[/#22c55e]{token_fragment}")
+        header.append("    ", style=DIM)
+        header.append(f"{len(removable)}", style=f"bold {SEVERITY_LEAN}")
+        header.append(" removable", style=DIM)
+        if removable_tokens:
+            header.append("  ·  ", style=DIM)
+            header.append(f"~{removable_tokens:,}", style=f"bold {SEVERITY_LEAN}")
+            header.append(" tok to save", style=DIM)
     if informational:
-        parts.append(f"[dim]{len(informational)} informational[/dim]")
-    console.print(
-        f"[bold]Found {len(findings)} issue(s).[/bold] " + ", ".join(parts) + "."
-    )
+        header.append("    ", style=DIM)
+        header.append(f"{len(informational)}", style=f"bold {DIM}")
+        header.append(" informational", style=DIM)
+
+    lines: list[Text] = [header]
 
     if informational:
-        console.print("")
-        console.print("[dim]Informational (handle manually):[/dim]")
+        lines.append(Text(""))
+        lines.append(Text("Informational (handle manually)", style=f"bold {DIM}"))
         for f in informational:
             scope_kind = f["scope"].get("kind", "global")
-            console.print(
-                f"  [dim]·[/dim] [dim][{scope_kind:>7}][/dim] "
-                f"{f['title']}  [dim]· {f['reason']}[/dim]"
-            )
+            row = Text()
+            row.append("  · ", style=DIM)
+            row.append(f"[{scope_kind:>7}] ", style=DIM)
+            row.append(f["title"], style="default")
+            row.append(f"  · {f['reason']}", style=DIM)
+            lines.append(row)
 
     if removable:
-        console.print("")
-        console.print(
-            "[dim]→ Opening picker. [/dim][bold]↑/↓[/bold][dim] move · [/dim]"
-            "[bold]space[/bold][dim] toggle · [/dim][bold]a[/bold][dim] invert · [/dim]"
-            "[bold]A[/bold][dim] all · [/dim][bold]n[/bold][dim] none · [/dim]"
-            "[bold]enter[/bold][dim] submit · [/dim][bold]q[/bold][dim] quit.[/dim]"
+        lines.append(Text(""))
+        teaser = Text()
+        teaser.append("→ Opening picker.  ", style=DIM)
+        for label, keys in (
+            ("move", "↑↓"),
+            ("toggle", "space"),
+            ("all", "A"),
+            ("none", "n"),
+            ("submit", "enter"),
+            ("quit", "q"),
+        ):
+            teaser.append(keys, style=f"bold {ACCENT}")
+            teaser.append(f" {label}  ", style=DIM)
+        lines.append(teaser)
+
+    body = Text("\n").join(lines)
+    console.print(
+        Panel(
+            body,
+            title=Text("Findings", style=f"bold {ACCENT}"),
+            title_align="left",
+            border_style=DIM,
+            padding=(1, 2),
         )
+    )

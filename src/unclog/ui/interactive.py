@@ -2,24 +2,21 @@
 
 Two-phase flow per spec §3.1:
 
-1. After the scan report is printed, prompt ``Fix these? [y/N]``. The
-   default is No so mashing enter exits cleanly.
-2. If the user accepts, show a curses-backed pick checkbox list. Findings
-   whose ``auto_checked`` bit is ``True`` are pre-ticked; everything
-   else starts unchecked. The user toggles selections, hits enter.
-3. A second prompt ``Apply N changes? [y/N]`` confirms the shortlist.
-4. If accepted, create a snapshot and run :mod:`unclog.apply.runner`.
+1. Print the scan report, then immediately open a Rich Live multiselect
+   picker. The picker is the decision surface — no pre-prompt is needed
+   and an empty selection exits without mutating anything.
+2. After selection, confirm with ``Apply N changes? [y/N]`` (default No).
+3. On accept, create a snapshot and run :mod:`unclog.apply.runner`.
    The result is rendered with file paths and token savings.
 
 Safety defaults (spec §3.2):
 
-- Both Y/N prompts default to No.
-- Dead-MCP and "broken" findings are never pre-ticked even when the
-  detector's auto_checked says so (``dead_mcp`` comes back false from
-  the detector already; this is a belt-and-braces filter).
+- The apply confirm defaults to No — mashing enter exits cleanly.
+- Findings start unchecked regardless of detector ``auto_checked``;
+  the bulk ``A``/``a``/``n`` keybinds cover the sweep case.
 - ``--dry-run`` short-circuits right before apply: the user sees the
   plan, no snapshot is created, no files change.
-- ``--yes`` skips both prompts and applies every auto-checked finding.
+- ``--yes`` skips the picker and applies every auto-checked finding.
   Opt-in findings are silently *excluded* — consent is still required
   for them even in yes-mode.
 """
@@ -31,13 +28,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from pick import KEYS_DOWN, KEYS_ENTER, KEYS_SELECT, KEYS_UP, Picker
 from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from unclog.apply.runner import ApplyResult, apply_findings
 from unclog.findings.base import Finding
 from unclog.ui.countdown import animate_countdown
+from unclog.ui.picker import run_rich_multiselect
 from unclog.ui.share import render_share_stat
+from unclog.ui.theme import ACCENT, DIM, SEVERITY_CLOGGED, SEVERITY_LEAN
 from unclog.util.paths import ClaudePaths
 
 
@@ -51,59 +51,18 @@ class Prompter(Protocol):
     ) -> list[Finding]: ...
 
 
-class _BulkKeyPicker(Picker):  # type: ignore[misc]
-    """``pick.Picker`` with bulk-select keybinds.
+class RichPrompter:
+    """Default prompter backed by :mod:`unclog.ui.picker`.
 
-    ``pick`` doesn't expose a hook for custom keys, so we override
-    ``run_loop`` — the only method that reads keypresses — and add:
-
-    - ``a`` — toggle all (checked ↔ unchecked inverted across the list)
-    - ``n`` — uncheck everything
-    - ``A`` — check everything
-
-    Everything else is delegated back to the parent implementation.
+    The picker is a Rich ``Live`` repaint loop driven by ``readchar``.
+    Compared to the curses-backed ``pick`` library or prompt_toolkit's
+    CPR-based loop, this gives us truecolor category badges, a live
+    running-total footer, and reliable input handling across every
+    terminal emulator we've tested.
     """
 
-    def run_loop(self, screen, position):  # type: ignore[no-untyped-def]
-        while True:
-            self.draw(screen)
-            c = screen.getch()
-            if self.quit_keys is not None and c in self.quit_keys:
-                return [] if self.multiselect else (None, -1)
-            if c in KEYS_UP:
-                self.move_up()
-            elif c in KEYS_DOWN:
-                self.move_down()
-            elif c in KEYS_ENTER:
-                if (
-                    self.multiselect
-                    and len(self.selected_indexes) < self.min_selection_count
-                ):
-                    continue
-                return self.get_selected()
-            elif c in KEYS_SELECT and self.multiselect:
-                self.mark_index()
-            elif self.multiselect and c == ord("a"):
-                current = set(self.selected_indexes)
-                self.selected_indexes = [
-                    i for i in range(len(self.options)) if i not in current
-                ]
-            elif self.multiselect and c == ord("A"):
-                self.selected_indexes = list(range(len(self.options)))
-            elif self.multiselect and c == ord("n"):
-                self.selected_indexes = []
-
-
-class PickPrompter:
-    """Default prompter backed by the ``pick`` library (curses-based).
-
-    We deliberately avoid ``questionary``/``prompt_toolkit`` here because
-    their rendering path depends on terminal Cursor Position Request
-    (CPR) support. Some terminals (and all ``expect`` ptys) silently
-    drop those queries, causing the picker to collapse into "accept
-    every default" with no way to toggle. ``pick`` uses curses directly,
-    which works reliably in every interactive terminal we've tested.
-    """
+    def __init__(self, console: Console) -> None:
+        self._console = console
 
     def confirm(self, message: str, default: bool) -> bool:
         suffix = " [Y/n] " if default else " [y/N] "
@@ -120,27 +79,16 @@ class PickPrompter:
     ) -> list[Finding]:
         if not choices:
             return []
-        titles = [title for title, _ in choices]
         findings = [finding for _, finding in choices]
-        preselected = [i for i, title in enumerate(titles) if title in defaults]
-        picker = _BulkKeyPicker(
-            options=titles,
-            title=(
-                f"{message}\n"
-                "↑/↓ move · space toggle · a invert · A all · n none · "
-                "enter submit · q quit"
-            ),
-            multiselect=True,
-            min_selection_count=0,
+        preselected = {
+            i for i, (title, _) in enumerate(choices) if title in defaults
+        }
+        return run_rich_multiselect(
+            findings,
+            title=message,
+            preselected=preselected,
+            console=self._console,
         )
-        # ``pick`` exposes a mutable attribute for pre-selection — this is
-        # the documented way to check items before the picker starts.
-        picker.selected_indexes = list(preselected)
-        result = picker.start()
-        # Multiselect returns list[tuple[option, index]]; single returns tuple.
-        if not isinstance(result, list):
-            return []
-        return [findings[index] for _, index in result]
 
 
 @dataclass
@@ -202,7 +150,7 @@ def run_interactive(
             # No interactive input available and --yes wasn't set. Silently
             # skip the fix flow; the report already printed.
             return None
-        active_prompter: Prompter = PickPrompter()
+        active_prompter: Prompter = RichPrompter(console)
     else:
         active_prompter = prompter
 
@@ -280,21 +228,51 @@ def _execute(
 
 def _render_result(result: ApplyResult, console: Console) -> None:
     console.print("")
-    console.print(f"[#22c55e]\u2713[/#22c55e] Snapshot  [dim]{result.snapshot.root}[/dim]")
-    console.print(
-        f"[#22c55e]\u2713[/#22c55e] Applied {len(result.succeeded)} change(s)"
-    )
+    lines: list[Text] = []
+
+    applied = Text()
+    applied.append("✓ ", style=f"bold {SEVERITY_LEAN}")
+    applied.append(f"Applied {len(result.succeeded)} change(s)", style="default")
     if result.token_savings:
-        console.print(
-            f"  [dim]Saved ~{result.token_savings:,} tokens.[/dim]"
-        )
+        applied.append("   ·   ", style=DIM)
+        applied.append(f"~{result.token_savings:,}", style=f"bold {SEVERITY_LEAN}")
+        applied.append(" tokens saved", style=DIM)
+    lines.append(applied)
+
+    snapshot_line = Text()
+    snapshot_line.append("  Snapshot  ", style=DIM)
+    snapshot_line.append(str(result.snapshot.root), style="default")
+    lines.append(snapshot_line)
+
     if result.failed:
-        console.print("")
-        console.print(f"[#ef4444]! {len(result.failed)} action(s) failed:[/#ef4444]")
+        lines.append(Text(""))
+        fail_header = Text()
+        fail_header.append("! ", style=f"bold {SEVERITY_CLOGGED}")
+        fail_header.append(f"{len(result.failed)} action(s) failed", style=SEVERITY_CLOGGED)
+        lines.append(fail_header)
         for finding, reason in result.failed:
-            console.print(f"  [dim]- {finding.title}: {reason}[/dim]")
-    console.print("")
-    console.print(f"[dim]Undo:  unclog restore {result.snapshot.id}[/dim]")
+            row = Text()
+            row.append("  · ", style=DIM)
+            row.append(finding.title, style="default")
+            row.append(f"  — {reason}", style=DIM)
+            lines.append(row)
+
+    lines.append(Text(""))
+    undo_line = Text()
+    undo_line.append("Undo:  ", style=DIM)
+    undo_line.append(f"unclog restore {result.snapshot.id}", style=f"bold {ACCENT}")
+    lines.append(undo_line)
+
+    border = SEVERITY_CLOGGED if result.failed else SEVERITY_LEAN
+    console.print(
+        Panel(
+            Text("\n").join(lines),
+            title=Text("Applied", style=f"bold {ACCENT}"),
+            title_align="left",
+            border_style=border,
+            padding=(1, 2),
+        )
+    )
 
 
 def _render_informational_next_steps(
@@ -309,10 +287,17 @@ def _render_informational_next_steps(
     per finding type so they know what to do.
     """
     console.print("")
-    console.print(
-        f"[bold]No auto-fixable issues.[/bold] "
-        f"[dim]{len(findings)} informational finding(s) — handle manually:[/dim]"
+    lines: list[Text] = []
+
+    header = Text()
+    header.append("No auto-fixable issues.", style="bold")
+    header.append(
+        f"   {len(findings)} informational finding(s) — handle manually:",
+        style=DIM,
     )
+    lines.append(header)
+    lines.append(Text(""))
+
     seen_hints: set[str] = set()
     for f in findings:
         hint = _manual_hint_for(f)
@@ -320,11 +305,27 @@ def _render_informational_next_steps(
         if key in seen_hints:
             continue
         seen_hints.add(key)
-        console.print(f"  [dim]·[/dim] {f.title}  [dim]→ {hint}[/dim]")
-    console.print("")
+        row = Text()
+        row.append("  · ", style=DIM)
+        row.append(f.title, style="default")
+        row.append(f"  → {hint}", style=DIM)
+        lines.append(row)
+
+    lines.append(Text(""))
+    footer = Text()
+    footer.append("Run ", style=DIM)
+    footer.append("unclog --json", style=f"bold {ACCENT}")
+    footer.append(" for full evidence on each finding.", style=DIM)
+    lines.append(footer)
+
     console.print(
-        "[dim]Run [/dim][bold]unclog --json[/bold][dim] for full evidence "
-        "on each finding.[/dim]"
+        Panel(
+            Text("\n").join(lines),
+            title=Text("Manual next steps", style=f"bold {ACCENT}"),
+            title_align="left",
+            border_style=DIM,
+            padding=(1, 2),
+        )
     )
 
 
@@ -390,7 +391,7 @@ def _stdin_is_tty() -> bool:
 
 __all__ = [
     "InteractiveOptions",
-    "PickPrompter",
     "Prompter",
+    "RichPrompter",
     "run_interactive",
 ]

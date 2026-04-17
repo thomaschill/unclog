@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
-    "pick>=2.4",
+    "readchar>=4.0",
     "tiktoken>=0.7",
 ]
 
@@ -88,7 +88,7 @@ disallow_untyped_defs = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["pick.*", "tiktoken.*"]
+module = ["readchar.*", "tiktoken.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
