@@ -12,8 +12,9 @@ lines, accepts several plausible shapes for the system prompt, and
 returns ``None`` when it cannot find anything it recognises. Callers
 degrade to byte-estimate baselines rather than crashing.
 
-Scope for M2: extract the system prompt text and any ``tools`` array,
-and count tokens for each. Per-source attribution (which tokens came
+Scope for v0.1: extract the system prompt text, any ``tools`` array,
+and per-MCP invocation counts (by counting ``tool_use`` blocks whose
+name starts with ``mcp__``). Per-source attribution (which tokens came
 from which MCP / skill / CLAUDE.md) is layered on top of this in
 ``unclog.app`` where we have the filesystem state to compare against.
 """
@@ -21,8 +22,10 @@ from which MCP / skill / CLAUDE.md) is layered on top of this in
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from unclog.scan.tokens import TokenCounter
@@ -30,6 +33,13 @@ from unclog.scan.tokens import TokenCounter
 # Cap how far into a JSONL we look for the system block. The system
 # prompt lands on the first user turn, so this is generous.
 MAX_RECORDS_SCANNED = 25
+
+# Cap how many lines we'll scan when counting MCP tool_use invocations.
+# Real sessions top out in the low thousands of records; this is the
+# upper bound we're willing to spend reading a single JSONL.
+MAX_INVOCATION_RECORDS = 50_000
+
+_MCP_TOOL_PREFIX = "mcp__"
 
 
 @dataclass(frozen=True)
@@ -171,3 +181,67 @@ def load_session_system_block(
         system_tokens=counter.count(system_text),
         tools_tokens=counter.count(tools_json),
     )
+
+
+def _iter_tool_use_names(record: Any) -> list[str]:
+    """Extract every ``tool_use`` block's ``name`` from a session record.
+
+    Claude Code writes assistant turns as ``{"message": {"content": [...]}}``
+    where each content block is a dict. We walk that structure and pull
+    names from any ``{"type": "tool_use", "name": "..."}`` block. Missing
+    keys, non-dict content items, and malformed shapes all simply produce
+    an empty list rather than raising.
+    """
+    if not isinstance(record, dict):
+        return []
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return []
+    content = message.get("content")
+    if not isinstance(content, list):
+        return []
+    names: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_use":
+            continue
+        name = block.get("name")
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
+def count_mcp_invocations(session_path: Path) -> Mapping[str, int]:
+    """Return ``{server_name: invocation_count}`` for one session JSONL.
+
+    We read up to :data:`MAX_INVOCATION_RECORDS` lines and count every
+    ``tool_use`` block whose name starts with ``mcp__<server>__``. Each
+    block is one invocation regardless of tool name, because from the
+    user's perspective "MCP X got used" is the actionable fact.
+
+    Missing / unreadable / malformed JSONLs return an empty mapping.
+    """
+    counts: dict[str, int] = {}
+    try:
+        with session_path.open("r", encoding="utf-8") as f:
+            for i, line in enumerate(f):
+                if i >= MAX_INVOCATION_RECORDS:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                for name in _iter_tool_use_names(record):
+                    if not name.startswith(_MCP_TOOL_PREFIX):
+                        continue
+                    remainder = name[len(_MCP_TOOL_PREFIX) :]
+                    server, _, _ = remainder.partition("__")
+                    if server:
+                        counts[server] = counts.get(server, 0) + 1
+    except OSError:
+        return MappingProxyType({})
+    return MappingProxyType(counts)

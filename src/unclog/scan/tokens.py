@@ -6,9 +6,6 @@ Over-counts natural language by a few percent and under-counts
 structured JSON; close enough to drive tier thresholds and the
 share-based decisions the hero/treemap expose.
 
-The ``--accurate`` mode (landing after M2) will route through
-``anthropic.Client.beta.messages.count_tokens`` for exact counts.
-
 A content-hash cache avoids re-tokenizing identical strings within a
 scan (the same CLAUDE.md is read once; the same skill description may
 be encountered per-scope during ``--all-projects``).

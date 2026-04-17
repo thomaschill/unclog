@@ -40,19 +40,17 @@ def test_scan_project_local_claude_md_read_separately(tmp_path: Path) -> None:
 def test_resolve_paths_explicit_project_wins(tmp_path: Path) -> None:
     out = resolve_project_paths(
         explicit_project=tmp_path / "x",
-        all_projects=False,
         cwd=tmp_path / "cwd",
         known_projects=(tmp_path / "other",),
     )
     assert out == ((tmp_path / "x").resolve(),)
 
 
-def test_resolve_paths_all_projects_returns_known(tmp_path: Path) -> None:
+def test_resolve_paths_returns_all_known_by_default(tmp_path: Path) -> None:
     a = tmp_path / "a"
     b = tmp_path / "b"
     out = resolve_project_paths(
         explicit_project=None,
-        all_projects=True,
         cwd=tmp_path,
         known_projects=(a, b, a),  # duplicate should collapse
     )
@@ -64,30 +62,40 @@ def test_resolve_paths_cwd_known_project(tmp_path: Path) -> None:
     project.mkdir()
     out = resolve_project_paths(
         explicit_project=None,
-        all_projects=False,
         cwd=project,
         known_projects=(project,),
     )
     assert out == (project.resolve(),)
 
 
-def test_resolve_paths_cwd_has_claude_md(tmp_path: Path) -> None:
+def test_resolve_paths_cwd_has_claude_md_gets_appended(tmp_path: Path) -> None:
     project = tmp_path / "proj"
     project.mkdir()
     (project / "CLAUDE.md").write_text("hi\n", encoding="utf-8")
     out = resolve_project_paths(
         explicit_project=None,
-        all_projects=False,
         cwd=project,
         known_projects=(),
     )
     assert out == (project.resolve(),)
 
 
-def test_resolve_paths_default_to_empty_when_cwd_not_project(tmp_path: Path) -> None:
+def test_resolve_paths_known_projects_plus_unregistered_cwd(tmp_path: Path) -> None:
+    known_a = tmp_path / "known"
+    cwd_project = tmp_path / "new"
+    cwd_project.mkdir()
+    (cwd_project / "CLAUDE.md").write_text("hi\n", encoding="utf-8")
     out = resolve_project_paths(
         explicit_project=None,
-        all_projects=False,
+        cwd=cwd_project,
+        known_projects=(known_a,),
+    )
+    assert out == (known_a.resolve(), cwd_project.resolve())
+
+
+def test_resolve_paths_empty_when_no_known_and_cwd_not_project(tmp_path: Path) -> None:
+    out = resolve_project_paths(
+        explicit_project=None,
         cwd=tmp_path,
         known_projects=(),
     )

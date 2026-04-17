@@ -6,6 +6,7 @@ from pathlib import Path
 from unclog.scan.filesystem import (
     enumerate_agents,
     enumerate_commands,
+    enumerate_plugin_content,
     enumerate_skills,
     load_installed_plugins,
 )
@@ -110,6 +111,56 @@ def test_enumerate_agents_empty_for_missing_dir(tmp_path: Path) -> None:
     assert enumerate_agents(tmp_path / "nope") == ()
 
 
+def test_enumerate_agents_recurses_into_category_dirs(tmp_path: Path) -> None:
+    agents_dir = tmp_path / "agents"
+    (agents_dir / "design").mkdir(parents=True)
+    (agents_dir / "engineering").mkdir(parents=True)
+    (agents_dir / "design" / "ui-designer.md").write_text(
+        "---\nname: ui-designer\ndescription: designs UI\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (agents_dir / "engineering" / "backend.md").write_text(
+        "---\nname: backend\ndescription: builds APIs\n---\nbody\n",
+        encoding="utf-8",
+    )
+    agents = enumerate_agents(agents_dir)
+    assert {a.slug for a in agents} == {"ui-designer", "backend"}
+
+
+def test_enumerate_agents_skips_files_without_agent_frontmatter(tmp_path: Path) -> None:
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    # README-style file: no agent frontmatter.
+    (agents_dir / "README.md").write_text("# Agents\n\nhow-to guide\n", encoding="utf-8")
+    # LICENSE-ish file: frontmatter but missing `description`.
+    (agents_dir / "LICENSE.md").write_text(
+        "---\nname: license\n---\nMIT\n", encoding="utf-8"
+    )
+    # Real agent.
+    (agents_dir / "real.md").write_text(
+        "---\nname: real\ndescription: does work\n---\nbody\n",
+        encoding="utf-8",
+    )
+    agents = enumerate_agents(agents_dir)
+    assert [a.slug for a in agents] == ["real"]
+
+
+def test_enumerate_agents_dedupes_by_slug(tmp_path: Path) -> None:
+    agents_dir = tmp_path / "agents"
+    (agents_dir / "a").mkdir(parents=True)
+    (agents_dir / "b").mkdir(parents=True)
+    (agents_dir / "a" / "dup.md").write_text(
+        "---\nname: dup\ndescription: first\n---\nA\n", encoding="utf-8"
+    )
+    (agents_dir / "b" / "dup.md").write_text(
+        "---\nname: dup\ndescription: second\n---\nB\n", encoding="utf-8"
+    )
+    agents = enumerate_agents(agents_dir)
+    assert len(agents) == 1
+    # Lexical path order: a/ sorts before b/.
+    assert agents[0].path.parent.name == "a"
+
+
 def test_enumerate_commands_lists_markdown_files(tmp_path: Path) -> None:
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()
@@ -172,3 +223,44 @@ def test_load_installed_plugins_accepts_dict_of_name_to_entry(tmp_path: Path) ->
     plugins = load_installed_plugins(path)
     names = sorted(p.name for p in plugins)
     assert names == ["bar", "foo"]
+
+
+def test_enumerate_plugin_content_returns_none_for_missing_path(tmp_path: Path) -> None:
+    assert enumerate_plugin_content("missing@mp", tmp_path / "nope") is None
+
+
+def test_enumerate_plugin_content_reads_only_claude_subtree(tmp_path: Path) -> None:
+    # Layout: a realistic plugin cache dir that ships skills for multiple
+    # AI clients. Only the .claude/ subtree should be counted.
+    install = tmp_path / "plugin-install"
+    install.mkdir()
+    # Claude-scoped skill — should be enumerated.
+    (install / ".claude" / "skills" / "focus").mkdir(parents=True)
+    (install / ".claude" / "skills" / "focus" / "SKILL.md").write_text(
+        "---\nname: focus\ndescription: be precise\n---\nbody\n", encoding="utf-8"
+    )
+    # Cursor-scoped duplicate — must be ignored to avoid double counting.
+    (install / ".cursor" / "skills" / "focus").mkdir(parents=True)
+    (install / ".cursor" / "skills" / "focus" / "SKILL.md").write_text(
+        "---\nname: focus\ndescription: be precise\n---\nbody\n", encoding="utf-8"
+    )
+    # Claude-scoped agent.
+    (install / ".claude" / "agents").mkdir(parents=True)
+    (install / ".claude" / "agents" / "reviewer.md").write_text(
+        "---\nname: reviewer\ndescription: reviews code\n---\n", encoding="utf-8"
+    )
+
+    content = enumerate_plugin_content("acme@mp", install)
+    assert content is not None
+    assert content.plugin_key == "acme@mp"
+    assert [s.slug for s in content.skills] == ["focus"]
+    assert [a.slug for a in content.agents] == ["reviewer"]
+
+
+def test_enumerate_plugin_content_handles_plugin_with_no_claude_dir(tmp_path: Path) -> None:
+    install = tmp_path / "empty-plugin"
+    install.mkdir()
+    content = enumerate_plugin_content("empty@mp", install)
+    assert content is not None
+    assert content.skills == ()
+    assert content.agents == ()

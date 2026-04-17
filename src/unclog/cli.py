@@ -13,7 +13,6 @@ from unclog.state import InstallationState
 from unclog.ui.display import DisplayOptions
 from unclog.ui.interactive import InteractiveOptions, run_interactive
 from unclog.ui.output import baseline_tokens, render_json, render_plain, render_rich
-from unclog.ui.spinner import scan_spinner
 from unclog.util.paths import claude_paths
 
 app = typer.Typer(
@@ -54,15 +53,10 @@ def root(
     project: Path | None = typer.Option(
         None,
         "--project",
-        help="Audit exactly this project path in addition to the global scope.",
+        help="Narrow the audit to a single project (default: every known project).",
         dir_okay=True,
         file_okay=False,
         resolve_path=False,
-    ),
-    all_projects: bool = typer.Option(
-        False,
-        "--all-projects",
-        help="Audit every project listed in ~/.claude.json alongside global.",
     ),
     report_only: bool = typer.Option(
         False,
@@ -83,7 +77,7 @@ def root(
     no_animation: bool = typer.Option(
         False,
         "--no-animation",
-        help="Disable motion (scan spinner, post-apply countdown); keeps colour.",
+        help="Disable motion (post-apply countdown); keeps colour.",
     ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
@@ -96,8 +90,6 @@ def root(
     """
     if ctx.invoked_subcommand is not None:
         return
-    if project is not None and all_projects:
-        raise typer.BadParameter("--project and --all-projects are mutually exclusive")
     if dry_run and yes:
         raise typer.BadParameter("--dry-run and --yes are mutually exclusive")
     if report_only and (dry_run or yes):
@@ -112,15 +104,7 @@ def root(
 
     console = Console(no_color=not display.colour)
 
-    if display.plain:
-        state = run_scan(project=project, all_projects=all_projects)
-    else:
-        with scan_spinner(console, animate=display.animate) as phase:
-            state = run_scan(
-                project=project,
-                all_projects=all_projects,
-                on_phase=phase,
-            )
+    state = run_scan(project=project)
 
     if as_json:
         typer.echo(render_json(state))

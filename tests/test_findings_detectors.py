@@ -28,6 +28,7 @@ def _state(
     settings: Settings | None = None,
     latest_session: SessionSystemBlock | None = None,
     activity: ActivityIndex | None = None,
+    mcp_invocations: dict[str, int] | None = None,
 ) -> InstallationState:
     return InstallationState(
         generated_at=NOW,
@@ -46,6 +47,7 @@ def _state(
             installed_plugins=plugins,
             latest_session=latest_session,
             activity=activity if activity is not None else ActivityIndex(),
+            mcp_invocations=MappingProxyType(mcp_invocations or {}),
         ),
     )
 
@@ -127,48 +129,46 @@ def _make_skill(tmp_path: Path, slug: str) -> Skill:
     )
 
 
-def test_unused_skill_requires_active_install(tmp_path: Path) -> None:
+def test_unused_skill_emits_one_finding_per_skill_even_without_activity(tmp_path: Path) -> None:
+    # Fresh skills, no activity record — detector still surfaces them so
+    # the user can triage. (v0.1 intentional: age/idle gates removed.)
+    skill_a = _make_skill(tmp_path, "fashion")
+    skill_b = _make_skill(tmp_path, "pitch")
+    state = _state(skills=(skill_a, skill_b), activity=ActivityIndex())
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_skill"]
+    assert {f.id for f in findings} == {"unused_skill:fashion", "unused_skill:pitch"}
+    # v0.1: safer default — nothing pre-checked; user opts in via the picker.
+    assert not any(f.auto_checked for f in findings)
+    # Every finding carries a concrete token-savings estimate for the UI.
+    assert all(f.token_savings is not None and f.token_savings > 0 for f in findings)
+
+
+def test_unused_skill_records_mention_in_reason(tmp_path: Path) -> None:
     skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
-    # No activity at all: detector refuses to flag.
-    state = _state(skills=(skill,), activity=ActivityIndex())
-    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
-    assert [f for f in findings if f.type == "unused_skill"] == []
-
-
-def test_unused_skill_skipped_when_install_is_overall_dormant(tmp_path: Path) -> None:
-    skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
-    state = _state(
-        skills=(skill,),
-        activity=ActivityIndex(last_active_overall=NOW - timedelta(days=120)),
-    )
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    assert [f for f in findings if f.type == "unused_skill"] == []
-
-
-def test_unused_skill_flags_stale_file_without_mention(tmp_path: Path) -> None:
-    skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
-    state = _state(skills=(skill,), activity=_active_index())
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    matches = [f for f in findings if f.type == "unused_skill"]
-    assert len(matches) == 1
-    assert matches[0].auto_checked is False
-    assert matches[0].action.primitive == "delete_file"
-
-
-def test_unused_skill_respects_at_mention_within_window(tmp_path: Path) -> None:
-    skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
     recent_mention = NOW - timedelta(days=10)
     activity = ActivityIndex(
         last_active_overall=NOW - timedelta(days=1),
         at_mention_last_used=MappingProxyType({"fashion": recent_mention}),
     )
     state = _state(skills=(skill,), activity=activity)
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    assert [f for f in findings if f.type == "unused_skill"] == []
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_skill"]
+    assert len(findings) == 1
+    assert findings[0].auto_checked is False
+    assert "mentioned" in findings[0].reason.lower()
+
+
+def test_unused_skill_emits_regardless_of_install_activity(tmp_path: Path) -> None:
+    # Historically this was gated on install-active; now it isn't.
+    skill = _make_skill(tmp_path, "fashion")
+    state = _state(
+        skills=(skill,),
+        activity=ActivityIndex(last_active_overall=NOW - timedelta(days=400)),
+    )
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_skill"]
+    assert len(findings) == 1
 
 
 def _make_agent(tmp_path: Path, slug: str) -> Agent:
@@ -186,14 +186,29 @@ def _make_agent(tmp_path: Path, slug: str) -> Agent:
     )
 
 
-def test_unused_agent_flags_stale_file(tmp_path: Path) -> None:
+def test_unused_agent_emits_one_finding_per_agent(tmp_path: Path) -> None:
+    agent_a = _make_agent(tmp_path, "planner")
+    agent_b = _make_agent(tmp_path, "reviewer")
+    state = _state(agents=(agent_a, agent_b), activity=ActivityIndex())
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_agent"]
+    assert {f.id for f in findings} == {"unused_agent:planner", "unused_agent:reviewer"}
+    assert not any(f.auto_checked for f in findings)
+    assert all(f.token_savings is not None for f in findings)
+    assert all(f.action.primitive == "delete_file" for f in findings)
+
+
+def test_unused_agent_clears_auto_check_when_mentioned(tmp_path: Path) -> None:
     agent = _make_agent(tmp_path, "planner")
-    _age_file(agent.path, days=120)
-    state = _state(agents=(agent,), activity=_active_index())
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    matches = [f for f in findings if f.type == "unused_agent"]
-    assert len(matches) == 1
-    assert matches[0].auto_checked is False
+    activity = ActivityIndex(
+        last_active_overall=NOW - timedelta(days=1),
+        at_mention_last_used=MappingProxyType({"planner": NOW - timedelta(days=3)}),
+    )
+    state = _state(agents=(agent,), activity=activity)
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_agent"]
+    assert len(findings) == 1
+    assert findings[0].auto_checked is False
 
 
 # --- dead_mcp / unused_mcp -----------------------------------------------
@@ -237,10 +252,28 @@ def test_dead_mcp_skipped_when_no_session() -> None:
     assert [f for f in findings if f.type == "dead_mcp"] == []
 
 
-def test_unused_mcp_is_noop_in_v0_1() -> None:
+def test_unused_mcp_flags_loaded_but_zero_invocations() -> None:
     config = ClaudeConfig(mcp_servers=MappingProxyType({"github": McpServer(name="github")}))
     session = _session_with_tools("mcp__github__list_repos")
+    # Default mcp_invocations is empty — "github" is loaded, never called.
     state = _state(config=config, latest_session=session, activity=_active_index())
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    unused = [f for f in findings if f.type == "unused_mcp"]
+    assert [f.id for f in unused] == ["unused_mcp:github"]
+    assert unused[0].auto_checked is False
+    assert unused[0].action.primitive == "comment_out_mcp"
+    assert unused[0].action.server_name == "github"
+
+
+def test_unused_mcp_respects_invocation_count() -> None:
+    config = ClaudeConfig(mcp_servers=MappingProxyType({"github": McpServer(name="github")}))
+    session = _session_with_tools("mcp__github__list_repos")
+    state = _state(
+        config=config,
+        latest_session=session,
+        activity=_active_index(),
+        mcp_invocations={"github": 3},
+    )
     findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "unused_mcp"] == []
 
@@ -273,11 +306,23 @@ def test_stale_plugin_flags_old_enabled_plugin() -> None:
     assert stale[0].auto_checked is False
 
 
-def test_stale_plugin_ignores_recent_plugin() -> None:
+def test_stale_plugin_emits_even_for_recent_plugin() -> None:
+    # v0.1: age gate dropped. Every enabled plugin is a candidate so the
+    # user sees its token cost and can choose to disable.
     plugin = _plugin("fresh", None, (NOW - timedelta(days=10)).isoformat().replace("+00:00", "Z"))
     settings = Settings(enabled_plugins=MappingProxyType({"fresh": True}))
     state = _state(plugins=(plugin,), settings=settings, activity=_active_index())
     findings = detect(state, state.global_scope.activity, Thresholds(stale_plugin_days=90), now=NOW)
+    stale = [f for f in findings if f.type == "stale_plugin"]
+    assert len(stale) == 1
+    assert stale[0].auto_checked is False
+
+
+def test_stale_plugin_skips_disabled_plugins() -> None:
+    plugin = _plugin("off", None, "2025-01-01T00:00:00Z")
+    settings = Settings(enabled_plugins=MappingProxyType({"off": False}))
+    state = _state(plugins=(plugin,), settings=settings, activity=_active_index())
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "stale_plugin"] == []
 
 

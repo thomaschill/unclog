@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from unclog.cli import app
-from unclog.scan.config import ClaudeConfig, McpServer, Settings
+from unclog.scan.config import ClaudeConfig, McpServer, ProjectRecord, Settings
 from unclog.scan.filesystem import Agent, Skill
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
@@ -174,22 +174,12 @@ def test_build_report_includes_projects_audited(monkeypatch: pytest.MonkeyPatch,
     project = tmp_path / "proj"
     project.mkdir()
     (project / "CLAUDE.md").write_text("# p\nbody\n", encoding="utf-8")
-    state = run_scan(project=project, all_projects=False, cwd=tmp_path)
+    state = run_scan(project=project, cwd=tmp_path)
     report = build_report(state)
     audited = report["projects_audited"]
     assert len(audited) == 1
     assert audited[0]["path"] == str(project.resolve())
     assert audited[0]["exists"] is True
-
-
-def test_cli_project_and_all_projects_are_mutually_exclusive(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    project = tmp_path / "proj"
-    project.mkdir()
-    result = runner.invoke(app, ["--project", str(project), "--all-projects"])
-    assert result.exit_code != 0
 
 
 def test_cli_json_flag_emits_valid_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -226,6 +216,88 @@ def test_build_report_emits_dead_mcp_finding_as_json() -> None:
     assert notion_finding["auto_checked"] is False
     assert notion_finding["action"]["primitive"] == "comment_out_mcp"
     assert notion_finding["action"]["server_name"] == "notion"
+
+
+def test_build_report_surfaces_project_scoped_mcps_in_composition() -> None:
+    config = ClaudeConfig(
+        mcp_servers={},
+        projects={
+            Path("/tmp/a"): ProjectRecord(
+                path=Path("/tmp/a"),
+                mcp_servers={"polymarket-docs": McpServer(name="polymarket-docs")},
+            ),
+            Path("/tmp/b"): ProjectRecord(
+                path=Path("/tmp/b"),
+                mcp_servers={"Roblox_Studio": McpServer(name="Roblox_Studio")},
+            ),
+        },
+    )
+    state = _make_state(config=config)
+    report = build_report(state)
+    sources = {e["source"] for e in report["composition"]}
+    assert "mcp:polymarket-docs" in sources
+    assert "mcp:Roblox_Studio" in sources
+    poly = next(e for e in report["composition"] if e["source"] == "mcp:polymarket-docs")
+    assert poly["scope"] == "project:/tmp/a"
+    assert poly["tokens_source"] == "unmeasured"
+
+
+def test_build_report_collapses_shared_project_mcps() -> None:
+    # Same MCP name + command + args declared in two projects → one row
+    # labelled "project:2 projects" rather than two separate rows.
+    shared = McpServer(name="shared", command="run", args=("--x",))
+    config = ClaudeConfig(
+        mcp_servers={},
+        projects={
+            Path("/tmp/a"): ProjectRecord(path=Path("/tmp/a"), mcp_servers={"shared": shared}),
+            Path("/tmp/b"): ProjectRecord(path=Path("/tmp/b"), mcp_servers={"shared": shared}),
+        },
+    )
+    state = _make_state(config=config)
+    report = build_report(state)
+    shared_rows = [e for e in report["composition"] if e["source"] == "mcp:shared"]
+    assert len(shared_rows) == 1
+    assert shared_rows[0]["scope"] == "project:2 projects"
+    assert "declared in 2 projects" in (shared_rows[0]["note"] or "")
+
+
+def test_inventory_counts_project_scoped_mcp_servers() -> None:
+    config = ClaudeConfig(
+        mcp_servers={},
+        projects={
+            Path("/tmp/a"): ProjectRecord(
+                path=Path("/tmp/a"),
+                mcp_servers={"sse-server": McpServer(name="sse-server")},
+            ),
+            Path("/tmp/b"): ProjectRecord(
+                path=Path("/tmp/b"),
+                mcp_servers={
+                    "polymarket-docs": McpServer(name="polymarket-docs"),
+                    "Roblox_Studio": McpServer(name="Roblox_Studio"),
+                },
+            ),
+        },
+    )
+    state = _make_state(config=config)
+    report = build_report(state)
+    assert report["inventory"]["mcp_servers"] == 3
+    assert report["inventory"]["mcp_servers_project"] == 3
+    assert report["inventory"]["mcp_servers_global"] == 0
+
+
+def test_render_plain_surfaces_project_scoped_mcp_label() -> None:
+    config = ClaudeConfig(
+        mcp_servers={"notion": McpServer(name="notion")},
+        projects={
+            Path("/tmp/a"): ProjectRecord(
+                path=Path("/tmp/a"),
+                mcp_servers={"sse-server": McpServer(name="sse-server")},
+            ),
+        },
+    )
+    state = _make_state(config=config)
+    out = render_plain(state)
+    assert "2 MCP servers (1 project-scoped)" in out
 
 
 def test_render_plain_lists_findings_with_selection_markers() -> None:

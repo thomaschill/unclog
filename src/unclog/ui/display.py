@@ -1,6 +1,6 @@
 """Centralised display-mode resolution (spec §10, §11.9).
 
-Every rendering layer — wordmark, hero, spinner, countdown — asks the
+Every rendering layer — wordmark, hero, countdown — asks the
 same question: *can I show colour?* and *can I move?* Rather than each
 layer re-deriving the answer from ``NO_COLOR`` + ``isatty`` + CLI flags,
 we resolve it once at the CLI entry point and pass a :class:`DisplayOptions`
@@ -28,7 +28,7 @@ class DisplayOptions:
 
     - ``plain``: route output through :func:`render_plain` (ASCII, no colour).
     - ``colour``: emit Rich style codes. Implied by ``not plain``.
-    - ``animate``: run spinner + countdown. Requires ``colour``.
+    - ``animate``: run post-apply countdown. Requires ``colour``.
     - ``show_wordmark``: render the ASCII wordmark (spec §11.4 says only
       in the default interactive flow — not in ``--report``/``--json``/``--plain``).
     """

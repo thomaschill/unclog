@@ -1,34 +1,24 @@
-"""Detect agents with no evidence of use in ``thresholds.unused_days``.
+"""Surface every installed agent as a removable candidate.
 
-Same v0.1 caveat as ``unused_skill``: per-entity invocation counts need
-full session JSONL parsing, which ships in v0.2. The weak-signal we
-have is a literal ``@<slug>`` mention in ``history.jsonl``. Agents are
-rarely invoked by name in prompts (Claude Code usually spawns them via
-the Task tool), so this detector is deliberately conservative:
-
-1. Only emit while the install is overall active.
-2. Require that the agent file has existed longer than the threshold.
-3. Never auto-check — user must opt in.
+Mirrors ``unused_skill``: one finding per agent, carries a token-savings
+estimate, pre-checked only when there is no ``@slug`` mention in
+history. See that module's docstring for the rationale behind dropping
+the age/install-activity gates in v0.1.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 from unclog.findings.base import Action, Finding, Scope
 from unclog.findings.thresholds import Thresholds
 from unclog.scan.stats import ActivityIndex
+from unclog.scan.tokens import count_tokens
 from unclog.state import InstallationState
 
 
-def _file_age_days(path: Path, now: datetime) -> int | None:
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return None
-    seen = datetime.fromtimestamp(mtime, tz=UTC)
-    return max((now - seen).days, 0)
+def _description_tokens(name: str, description: str | None) -> int:
+    return count_tokens(f"{name}: {description or ''}")
 
 
 def detect(
@@ -38,42 +28,38 @@ def detect(
     *,
     now: datetime,
 ) -> list[Finding]:
-    if activity.last_active_overall is None:
-        return []
-    if (now - activity.last_active_overall).days >= thresholds.unused_days:
-        return []
-
-    window_start = now - timedelta(days=thresholds.unused_days)
     findings: list[Finding] = []
     for agent in state.global_scope.agents:
-        mention = activity.at_mention_last_used.get(agent.slug)
-        if mention is not None and mention >= window_start:
-            continue
-        mention_name = activity.at_mention_last_used.get(agent.name)
-        if mention_name is not None and mention_name >= window_start:
-            continue
-
-        age = _file_age_days(agent.path, now)
-        if age is None or age < thresholds.unused_days:
-            continue
-
+        mentioned = (
+            agent.slug in activity.at_mention_last_used
+            or agent.name in activity.at_mention_last_used
+        )
+        # Default: unchecked. @mention is a weak negative signal (Task-tool
+        # invocations leave no trace), and when most users have 100+ agents
+        # installed that were never mentioned, pre-checking everything makes
+        # the picker arduous. Safer to opt in than opt out.
+        auto_checked = False
+        reason = (
+            f"no @{agent.slug} mention in history"
+            if not mentioned
+            else f"mentioned as @{agent.slug} in history"
+        )
         findings.append(
             Finding(
                 id=f"unused_agent:{agent.slug}",
                 type="unused_agent",
                 title=f"Remove agent {agent.name}",
-                reason=f"no @{agent.slug} mention in {thresholds.unused_days}d",
+                reason=reason,
                 scope=Scope(kind="global"),
                 action=Action(primitive="delete_file", path=agent.path),
-                auto_checked=False,
-                token_savings=None,
+                auto_checked=auto_checked,
+                token_savings=_description_tokens(agent.name, agent.description),
                 evidence={
                     "path": str(agent.path),
-                    "file_age_days": age,
-                    "threshold_days": thresholds.unused_days,
+                    "mentioned_in_history": mentioned,
                     "note": (
-                        "v0.1 cannot see Task-tool agent invocations; "
-                        "flagged because no @mention appears in history.jsonl"
+                        "v0.1 can't see Task-tool agent invocations; auto_checked "
+                        "reflects only the absence of an @slug mention in history."
                     ),
                 },
             )

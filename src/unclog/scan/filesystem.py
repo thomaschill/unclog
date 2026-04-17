@@ -66,6 +66,23 @@ class InstalledPlugin:
     git_commit_sha: str | None
 
 
+@dataclass(frozen=True)
+class PluginContent:
+    """Bundled skills and agents discovered under an enabled plugin.
+
+    Claude Code loads plugin content from ``<install_path>/.claude/skills/``
+    and ``<install_path>/.claude/agents/``. Other client subdirectories
+    (``.cursor/``, ``.gemini/``, ``.trae/`` …) are sibling copies for
+    different AI clients — we intentionally ignore them to avoid double
+    counting.
+    """
+
+    plugin_key: str
+    install_path: Path
+    skills: tuple[Skill, ...]
+    agents: tuple[Agent, ...]
+
+
 def _split_frontmatter(text: str) -> tuple[Mapping[str, str], int, int]:
     """Return (parsed, frontmatter_byte_length, body_byte_length).
 
@@ -155,19 +172,34 @@ def enumerate_skills(skills_dir: Path) -> tuple[Skill, ...]:
 
 
 def enumerate_agents(agents_dir: Path) -> tuple[Agent, ...]:
-    """Return every agent found under ``agents_dir``."""
+    """Return every agent found under ``agents_dir`` (recursive).
+
+    Claude Code loads agents from nested category dirs (``agents/design/*.md``,
+    ``agents/engineering/*.md``, ...), so we ``rglob``. Non-agent files like
+    ``README.md`` or ``LICENSE.md`` share the same extension but lack agent
+    frontmatter — we filter to files whose YAML front-matter declares both
+    ``name`` and ``description``, which is the shape Claude's agent loader
+    requires. Entries with duplicate slugs are deduped (first wins,
+    lexical-path order) to match the loader's last-registration-loses behavior.
+    """
     if not agents_dir.is_dir():
         return ()
     agents: list[Agent] = []
-    for entry in sorted(agents_dir.iterdir()):
-        if not entry.is_file() or entry.suffix != ".md":
+    seen_slugs: set[str] = set()
+    for entry in sorted(agents_dir.rglob("*.md")):
+        if not entry.is_file():
             continue
         try:
             text = entry.read_text(encoding="utf-8")
         except OSError:
             continue
         frontmatter, fm_bytes, body_bytes = _split_frontmatter(text)
+        if "name" not in frontmatter or "description" not in frontmatter:
+            continue
         slug = entry.stem
+        if slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
         agents.append(
             Agent(
                 name=frontmatter.get("name") or slug,
@@ -198,6 +230,29 @@ def enumerate_commands(commands_dir: Path) -> tuple[Command, ...]:
     return tuple(commands)
 
 
+def enumerate_plugin_content(
+    plugin_key: str, install_path: Path
+) -> PluginContent | None:
+    """Scan a plugin's Claude-specific bundled skills + agents.
+
+    Returns ``None`` if the install path is missing. Returns a populated
+    ``PluginContent`` even when both lists are empty — the presence of
+    the directory itself is a useful signal (the plugin is installed but
+    carries no bundled content).
+    """
+    if not install_path.is_dir():
+        return None
+    claude_dir = install_path / ".claude"
+    skills = enumerate_skills(claude_dir / "skills")
+    agents = enumerate_agents(claude_dir / "agents")
+    return PluginContent(
+        plugin_key=plugin_key,
+        install_path=install_path,
+        skills=skills,
+        agents=agents,
+    )
+
+
 def load_installed_plugins(path: Path) -> tuple[InstalledPlugin, ...]:
     """Read ``installed_plugins.json`` into typed records.
 
@@ -215,7 +270,28 @@ def load_installed_plugins(path: Path) -> tuple[InstalledPlugin, ...]:
     if isinstance(raw, dict):
         plugins_field = raw.get("plugins")
         if isinstance(plugins_field, list):
+            # Flat list layout: [{"name": "...", "marketplace": "...", ...}, ...]
             entries = list(plugins_field)
+        elif isinstance(plugins_field, dict):
+            # Claude Code v2 layout: { "<name>@<marketplace>": [ {<install>}, ... ] }.
+            # The dict key encodes name + marketplace; each value is a list
+            # of install records (one per scope: user/project/etc.). We
+            # emit one entry per install so each scope shows up.
+            for key, value in plugins_field.items():
+                if not isinstance(key, str):
+                    continue
+                plugin_name, _, marketplace = key.partition("@")
+                installs = value if isinstance(value, list) else [value]
+                for install in installs:
+                    if not isinstance(install, dict):
+                        continue
+                    entries.append(
+                        {
+                            "name": plugin_name,
+                            "marketplace": marketplace or None,
+                            **install,
+                        }
+                    )
         else:
             # Some historical layouts key plugins by name at the top level.
             for name, value in raw.items():

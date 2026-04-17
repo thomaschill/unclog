@@ -8,9 +8,6 @@ three tick values are ``before → midpoint → after`` (matching the spec's
 Static fallback: when animation is disabled (``--no-animation``,
 non-TTY), the countdown prints a single line showing both numbers with
 an arrow between them, coloured by the post-apply tier.
-
-Only two places in the UI are allowed to move (§11.8); the scan spinner
-is the other.
 """
 
 from __future__ import annotations

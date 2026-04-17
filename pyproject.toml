@@ -20,16 +20,16 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development",
     "Topic :: Utilities",
+    "Typing :: Typed",
 ]
 dependencies = [
     "typer>=0.12",
     "rich>=13.7",
-    "questionary>=2.0",
+    "readchar>=4.0",
     "tiktoken>=0.7",
 ]
 
 [project.optional-dependencies]
-accurate = ["anthropic>=0.40"]
 dev = [
     "pytest>=8.0",
     "pytest-snapshot>=0.9",
@@ -88,7 +88,7 @@ disallow_untyped_defs = true
 no_implicit_optional = true
 
 [[tool.mypy.overrides]]
-module = ["questionary.*", "tiktoken.*"]
+module = ["readchar.*", "tiktoken.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

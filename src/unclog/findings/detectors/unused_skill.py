@@ -1,40 +1,42 @@
-"""Detect skills with no evidence of use in ``thresholds.unused_days``.
+"""Surface every installed skill as a removable candidate.
 
-Honest v0.1 caveat (spec §6): per-tool invocation counts land in v0.2
-once we parse full session JSONL. In v0.1 the only per-entity signals
-we can mine are user prompts mentioning ``@<slug>`` in ``history.jsonl``
-— a weak heuristic. We therefore:
+Historical context: earlier drafts gated this detector on file age + install
+activity to stay conservative. In practice the gates produced a dead-end
+UX — a user with 22 recently-installed skills saw zero findings even
+though several were objectively never going to be used.
 
-1. Require that the install itself is active (``last_active_overall``
-   is recent) before emitting anything; if Claude Code hasn't been run
-   in months, calling every skill "unused" is noise.
-2. Only emit findings when the skill's file has existed longer than the
-   threshold AND there is no ``@<slug>`` mention in history within the
-   threshold window.
-3. Never auto-check. Users must opt in — we cannot prove non-use.
+v0.1 therefore trades conservatism for transparency:
 
-The detector reports the skill's location; a concrete token-savings
-estimate lands once the scan re-runs after a snapshot is applied.
+1. Emit one finding per skill, regardless of age or install-activity.
+2. Carry a ``token_savings`` estimate so the interactive picker can show
+   the cost of each skill (name + description tokens, the bytes Claude
+   loads on every session).
+3. Leave every skill *unchecked* by default. ``@slug`` mention absence
+   is a weak signal (skills can be invoked programmatically without any
+   mention), and pre-checking ~every skill made the picker arduous.
+   The user now explicitly opts in to each removal; bulk ``a``/``A``
+   keybinds in the picker handle the sweep case.
+
+We still cannot prove non-use (per-tool invocation counts require full
+session JSONL parsing — deferred to v0.2), so the evidence block is
+explicit about that limitation.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 from unclog.findings.base import Action, Finding, Scope
 from unclog.findings.thresholds import Thresholds
 from unclog.scan.stats import ActivityIndex
+from unclog.scan.tokens import count_tokens
 from unclog.state import InstallationState
 
 
-def _file_age_days(path: Path, now: datetime) -> int | None:
-    try:
-        mtime = path.stat().st_mtime
-    except OSError:
-        return None
-    seen = datetime.fromtimestamp(mtime, tz=UTC)
-    return max((now - seen).days, 0)
+def _description_tokens(name: str, description: str | None) -> int:
+    # Matches the composition model in ui/output.py: name + ": " + description
+    # is the line that ends up in Claude's system preamble per skill.
+    return count_tokens(f"{name}: {description or ''}")
 
 
 def detect(
@@ -44,47 +46,34 @@ def detect(
     *,
     now: datetime,
 ) -> list[Finding]:
-    if activity.last_active_overall is None:
-        # No activity record at all — we can't claim anything is unused.
-        return []
-    install_idle_days = (now - activity.last_active_overall).days
-    if install_idle_days >= thresholds.unused_days:
-        # Whole install is dormant; flagging individual skills is
-        # misleading — the user's situation is broader than a stale file.
-        return []
-
-    window_start = now - timedelta(days=thresholds.unused_days)
     findings: list[Finding] = []
     for skill in state.global_scope.skills:
-        mention = activity.at_mention_last_used.get(skill.slug)
-        if mention is not None and mention >= window_start:
-            continue
-        mention_name = activity.at_mention_last_used.get(skill.name)
-        if mention_name is not None and mention_name >= window_start:
-            continue
-
-        age = _file_age_days(skill.skill_md_path, now)
-        if age is None or age < thresholds.unused_days:
-            # Recently added skills get the benefit of the doubt.
-            continue
-
+        mentioned = (
+            skill.slug in activity.at_mention_last_used
+            or skill.name in activity.at_mention_last_used
+        )
+        auto_checked = False
+        reason = (
+            f"no @{skill.slug} mention in history"
+            if not mentioned
+            else f"mentioned as @{skill.slug} in history"
+        )
         findings.append(
             Finding(
                 id=f"unused_skill:{skill.slug}",
                 type="unused_skill",
                 title=f"Remove skill {skill.name}",
-                reason=f"no @{skill.slug} mention in {thresholds.unused_days}d",
+                reason=reason,
                 scope=Scope(kind="global"),
                 action=Action(primitive="delete_file", path=skill.directory),
-                auto_checked=False,
-                token_savings=None,
+                auto_checked=auto_checked,
+                token_savings=_description_tokens(skill.name, skill.description),
                 evidence={
                     "path": str(skill.skill_md_path),
-                    "file_age_days": age,
-                    "threshold_days": thresholds.unused_days,
+                    "mentioned_in_history": mentioned,
                     "note": (
-                        "v0.1 cannot prove non-use; flagged because no @mention "
-                        "appears in history.jsonl within the threshold window"
+                        "v0.1 can't prove non-use from session JSONL; auto_checked "
+                        "reflects only the absence of an @slug mention in history."
                     ),
                 },
             )

@@ -56,12 +56,13 @@ def test_interactive_exits_cleanly_when_no_findings(tmp_path: Path) -> None:
     assert result is None
 
 
-def test_interactive_first_no_bypasses_apply(tmp_path: Path) -> None:
+def test_interactive_empty_picker_selection_bypasses_apply(tmp_path: Path) -> None:
     skill_md = tmp_path / "skills" / "g" / "SKILL.md"
     skill_md.parent.mkdir(parents=True)
     skill_md.write_text("body\n", encoding="utf-8")
     findings = [_f("a", "delete_file", path=skill_md)]
-    prompter = FakePrompter(confirm_answers=[False])
+    # Picker returns [] (user quit or submitted with nothing selected).
+    prompter = FakePrompter(multiselect_answer=[])
     result = run_interactive(
         findings,
         claude_home=tmp_path,
@@ -71,16 +72,18 @@ def test_interactive_first_no_bypasses_apply(tmp_path: Path) -> None:
         prompter=prompter,
     )
     assert result is None
-    assert skill_md.exists()  # no mutation happened
+    assert skill_md.exists()
+    # No confirm prompt should have fired — picker is the first decision.
+    assert prompter.confirm_calls == []
 
 
-def test_interactive_second_no_bypasses_apply(tmp_path: Path) -> None:
+def test_interactive_apply_confirm_no_bypasses_apply(tmp_path: Path) -> None:
     skill_md = tmp_path / "skills" / "g" / "SKILL.md"
     skill_md.parent.mkdir(parents=True)
     skill_md.write_text("body\n", encoding="utf-8")
     finding = _f("a", "delete_file", path=skill_md)
     prompter = FakePrompter(
-        confirm_answers=[True, False],  # fix these? yes. apply N? no.
+        confirm_answers=[False],  # apply N? no.
         multiselect_answer=[finding],
     )
     result = run_interactive(
@@ -101,7 +104,7 @@ def test_interactive_accepts_and_applies(tmp_path: Path) -> None:
     skill_md.write_text("body\n", encoding="utf-8")
     finding = _f("a", "delete_file", path=skill_md)
     prompter = FakePrompter(
-        confirm_answers=[True, True],
+        confirm_answers=[True],
         multiselect_answer=[finding],
     )
     result = run_interactive(
@@ -123,7 +126,7 @@ def test_interactive_dry_run_skips_apply(tmp_path: Path) -> None:
     skill_md.write_text("body\n", encoding="utf-8")
     finding = _f("a", "delete_file", path=skill_md)
     prompter = FakePrompter(
-        confirm_answers=[True, True],
+        confirm_answers=[True],
         multiselect_answer=[finding],
     )
     result = run_interactive(
@@ -176,7 +179,7 @@ def test_interactive_countdown_runs_when_baseline_provided(tmp_path: Path) -> No
         token_savings=500,
     )
     prompter = FakePrompter(
-        confirm_answers=[True, True],
+        confirm_answers=[True],
         multiselect_answer=[finding],
     )
     console = Console(record=True)
@@ -194,6 +197,46 @@ def test_interactive_countdown_runs_when_baseline_provided(tmp_path: Path) -> No
     # Static (animate=False) countdown prints before -> after on one line.
     assert "42,000" in output
     assert "41,500" in output
+
+
+def _flag_only(fid: str, ftype: str, **extra: object) -> Finding:
+    return Finding(
+        id=fid,
+        type=ftype,  # type: ignore[arg-type]
+        title=f"title {fid}",
+        reason="r",
+        scope=Scope(kind="global"),
+        action=Action(primitive="flag_only", **extra),  # type: ignore[arg-type]
+        auto_checked=False,
+        evidence=MappingProxyType({}),
+    )
+
+
+def test_interactive_flag_only_findings_render_next_step_hints(tmp_path: Path) -> None:
+    console = Console(record=True, width=120)
+    prompter = FakePrompter()
+    findings = [
+        _flag_only("missing_claudeignore:/tmp/a", "missing_claudeignore",
+                   path=tmp_path / "a" / ".claudeignore"),
+        _flag_only("disabled_plugin_residue:foo@mp", "disabled_plugin_residue",
+                   plugin_key="foo@mp"),
+    ]
+    result = run_interactive(
+        findings,
+        claude_home=tmp_path,
+        project_paths=(),
+        console=console,
+        options=InteractiveOptions(),
+        prompter=prompter,
+    )
+    assert result is None
+    # No prompts — flag-only findings render hints and exit.
+    assert prompter.confirm_calls == []
+    output = console.export_text()
+    assert "No auto-fixable issues" in output
+    # Each finding type gets a concrete manual-remediation hint.
+    assert "create" in output  # missing_claudeignore hint
+    assert "leave in place" in output  # disabled_plugin_residue hint
 
 
 def test_interactive_yes_with_no_auto_checked_is_noop(tmp_path: Path) -> None:

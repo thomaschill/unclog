@@ -24,6 +24,7 @@ import json
 from typing import Any
 
 from rich.console import Console
+from rich.text import Text
 
 from unclog import __version__
 from unclog.findings import detect as detect_findings
@@ -33,6 +34,7 @@ from unclog.scan.session import SessionSystemBlock
 from unclog.scan.tokens import TiktokenCounter, TokenCounter
 from unclog.state import InstallationState, tier_for_baseline
 from unclog.ui.hero import render_hero, render_treemap
+from unclog.ui.theme import ACCENT, DIM, SEVERITY_LEAN
 from unclog.ui.wordmark import wordmark
 from unclog.util.paths import ClaudePaths
 
@@ -42,6 +44,18 @@ SCHEMA_ID = "unclog.v0.1"
 # ``mcp__<server>__<tool>``. Built-in tools (Read, Write, Bash, etc.)
 # do not carry this prefix.
 _MCP_TOOL_PREFIX = "mcp__"
+
+# Category colours — deliberately mirror the picker's badge palette so
+# the user sees the same colour for "skill" in the scan summary and in
+# the picker, and their eye learns the taxonomy across screens.
+_INVENTORY_CHIP_COLOUR: dict[str, str] = {
+    "skills": "#22c55e",
+    "agents": "#38bdf8",
+    "commands": "#a78bfa",
+    "plugins": "#e879f9",
+    "mcp": "#fb923c",
+    "projects": "#a3a3a3",
+}
 
 
 def _mcp_attribution(session: SessionSystemBlock, counter: TokenCounter) -> dict[str, int]:
@@ -62,6 +76,38 @@ def _mcp_attribution(session: SessionSystemBlock, counter: TokenCounter) -> dict
         blob = json.dumps(tool, separators=(",", ":"))
         per_server[server_name] = per_server.get(server_name, 0) + counter.count(blob)
     return per_server
+
+
+def _mcp_entry(
+    name: str,
+    measured: int | None,
+    *,
+    scope: str,
+    extra_note: str | None = None,
+) -> dict[str, Any]:
+    """Build a composition row for a single MCP server.
+
+    ``measured`` is the per-server token cost derived from the latest
+    session's tools array when that array is present; current Claude
+    Code session JSONLs don't carry tool schemas, so this is almost
+    always ``None`` in practice and the row renders as unmeasured with
+    a note explaining why.
+    """
+    if measured is not None:
+        note = extra_note
+    else:
+        base_note = (
+            "schema not in session JSONL; v0.1 does not spawn MCP servers to probe them"
+        )
+        note = f"{base_note}; {extra_note}" if extra_note else base_note
+    return {
+        "source": f"mcp:{name}",
+        "scope": scope,
+        "bytes": None,
+        "tokens": measured,
+        "tokens_source": "session+tiktoken" if measured is not None else "unmeasured",
+        "note": note,
+    }
 
 
 def build_composition(state: InstallationState, counter: TokenCounter) -> list[dict[str, Any]]:
@@ -117,24 +163,71 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
             }
         )
 
-    mcp_servers = gs.config.mcp_servers if gs.config else {}
-    session = gs.latest_session
-    attribution = _mcp_attribution(session, counter) if session else {}
-    for name in sorted(mcp_servers):
-        measured = attribution.get(name)
+    for content in gs.plugin_content:
+        if not content.skills and not content.agents:
+            continue
+        plugin_tokens = sum(
+            counter.count(f"{s.name}: {s.description or ''}") for s in content.skills
+        ) + sum(
+            counter.count(f"{a.name}: {a.description or ''}") for a in content.agents
+        )
+        plugin_bytes = sum(s.frontmatter_bytes for s in content.skills) + sum(
+            a.frontmatter_bytes for a in content.agents
+        )
+        breakdown = f"n_skills={len(content.skills)}, n_agents={len(content.agents)}"
         entries.append(
             {
-                "source": f"mcp:{name}",
+                "source": f"plugin:{content.plugin_key}:bundled ({breakdown})",
                 "scope": "global",
-                "bytes": None,
-                "tokens": measured if measured is not None else None,
-                "tokens_source": "session+tiktoken" if measured is not None else "unmeasured",
-                "note": (
-                    None
-                    if measured is not None
-                    else "no session JSONL found - open this MCP in Claude Code once to measure"
-                ),
+                "bytes": plugin_bytes,
+                "tokens": plugin_tokens,
+                "tokens_source": "tiktoken",
+                "note": "bundled by plugin; disable plugin in settings.json to skip",
             }
+        )
+
+    session = gs.latest_session
+    attribution = _mcp_attribution(session, counter) if session else {}
+
+    # Global MCPs: load unconditionally into every session.
+    global_mcp = gs.config.mcp_servers if gs.config else {}
+    for name in sorted(global_mcp):
+        measured = attribution.get(name)
+        entries.append(_mcp_entry(name, measured, scope="global"))
+
+    # Project-scoped MCPs: only load when that project is open, but
+    # they still bloat the baseline for users who spend most of their
+    # time in a single project. Collapse identical configs across
+    # projects (name + command + args) so a shared MCP appears once
+    # with the list of projects that declare it.
+    project_groups: dict[tuple[str, str | None, tuple[str, ...]], list[str]] = {}
+    project_attribution: dict[tuple[str, str | None, tuple[str, ...]], int] = {}
+    if gs.config:
+        for project in gs.config.projects.values():
+            for srv_name, srv in project.mcp_servers.items():
+                key = (srv_name, srv.command, srv.args)
+                project_groups.setdefault(key, []).append(str(project.path))
+                m = attribution.get(srv_name)
+                if m is not None and key not in project_attribution:
+                    project_attribution[key] = m
+    for (srv_name, _cmd, _args), project_paths in sorted(project_groups.items()):
+        measured = project_attribution.get((srv_name, _cmd, _args))
+        scope_label = (
+            f"project:{project_paths[0]}"
+            if len(project_paths) == 1
+            else f"project:{len(project_paths)} projects"
+        )
+        entries.append(
+            _mcp_entry(
+                srv_name,
+                measured,
+                scope=scope_label,
+                extra_note=(
+                    None
+                    if len(project_paths) == 1
+                    else f"declared in {len(project_paths)} projects"
+                ),
+            )
         )
 
     def _rank(entry: dict[str, Any]) -> int:
@@ -145,14 +238,40 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
     return entries
 
 
+def _mcp_label(inv: dict[str, Any]) -> str:
+    """Render the MCP-server count with project-scope breakdown when relevant.
+
+    Project-scoped MCPs live in ``~/.claude.json``'s per-project sections
+    and only load when that project is open. Surfacing them separately
+    prevents the "0 MCP servers" confusion for users whose entire MCP
+    footprint is project-scoped.
+    """
+    total = inv["mcp_servers"]
+    project_scoped = inv.get("mcp_servers_project", 0)
+    if total == 0:
+        return "0 MCP servers"
+    if project_scoped and project_scoped == total:
+        return f"{total} MCP servers (project-scoped)"
+    if project_scoped:
+        return f"{total} MCP servers ({project_scoped} project-scoped)"
+    return f"{total} MCP servers"
+
+
 def _inventory(state: InstallationState) -> dict[str, int]:
     gs = state.global_scope
+    global_mcp = len(gs.config.mcp_servers) if gs.config else 0
+    project_mcp = 0
+    if gs.config:
+        for project in gs.config.projects.values():
+            project_mcp += len(project.mcp_servers)
     return {
         "skills": len(gs.skills),
         "agents": len(gs.agents),
         "commands": len(gs.commands),
         "plugins": len(gs.installed_plugins),
-        "mcp_servers": len(gs.config.mcp_servers) if gs.config else 0,
+        "mcp_servers": global_mcp + project_mcp,
+        "mcp_servers_global": global_mcp,
+        "mcp_servers_project": project_mcp,
         "projects_known": len(gs.config.projects) if gs.config else 0,
     }
 
@@ -279,7 +398,7 @@ def render_plain(state: InstallationState) -> str:
         "inventory: "
         f"{inv['skills']} skills | {inv['agents']} agents | "
         f"{inv['commands']} commands | {inv['plugins']} plugins | "
-        f"{inv['mcp_servers']} MCP servers | "
+        f"{_mcp_label(inv)} | "
         f"{inv['projects_known']} known projects"
     )
     if report["projects_audited"]:
@@ -299,12 +418,28 @@ def render_plain(state: InstallationState) -> str:
     if report["findings"]:
         lines.append("")
         auto = sum(1 for f in report["findings"] if f.get("auto_checked"))
+        info = sum(
+            1
+            for f in report["findings"]
+            if f.get("action", {}).get("primitive") == "flag_only"
+        )
+        opt_in = len(report["findings"]) - auto - info
+        parts = [f"{auto} auto-fix"]
+        if opt_in:
+            parts.append(f"{opt_in} opt-in")
+        if info:
+            parts.append(f"{info} informational")
         lines.append(
-            f"findings: {len(report['findings'])} "
-            f"({auto} auto-checked, {len(report['findings']) - auto} opt-in)"
+            f"findings: {len(report['findings'])} ({', '.join(parts)})"
         )
         for f in report["findings"]:
-            marker = "[x]" if f.get("auto_checked") else "[ ]"
+            primitive = f.get("action", {}).get("primitive")
+            if f.get("auto_checked"):
+                marker = "[x]"
+            elif primitive == "flag_only":
+                marker = "[i]"
+            else:
+                marker = "[ ]"
             scope = f["scope"].get("kind", "global")
             lines.append(f"  {marker} [{scope:>7}] {f['title']} - {f['reason']}")
     else:
@@ -336,20 +471,12 @@ def render_rich(
 
     if show_wordmark:
         console.print(wordmark())
-        console.print("")
     console.print(render_hero(baseline))
-    console.print("")
     if report["composition"]:
-        console.print(render_treemap(report["composition"]))
         console.print("")
-    console.print(
-        "[dim]"
-        f"{inv['skills']} skills · {inv['agents']} agents · "
-        f"{inv['commands']} commands · {inv['plugins']} plugins · "
-        f"{inv['mcp_servers']} MCP servers · "
-        f"{inv['projects_known']} known projects"
-        "[/dim]"
-    )
+        console.print(render_treemap(report["composition"]))
+    console.print("")
+    console.print(_render_inventory_chips(inv))
     _render_findings_rich(report["findings"], console)
     if report["warnings"]:
         console.print("")
@@ -357,20 +484,124 @@ def render_rich(
             console.print(f"[#eab308]![/#eab308] [dim]{warning}[/dim]")
 
 
+def _render_inventory_chips(inv: dict[str, int]) -> Text:
+    """Render the inventory line as coloured category chips.
+
+    Each chip is ``N label`` with the count in the category colour and
+    the label dim. Shares the picker's palette so the user's eye learns
+    the taxonomy once and carries it everywhere. Zero-valued categories
+    are dropped to keep the line compact on narrow terminals.
+    """
+    mcp_label = "MCP"
+    if inv["mcp_servers"] and inv.get("mcp_servers_project") == inv["mcp_servers"]:
+        mcp_label = "MCP (project-scoped)"
+    elif inv.get("mcp_servers_project"):
+        mcp_label = f"MCP ({inv['mcp_servers_project']} project-scoped)"
+
+    chips: list[tuple[str, str, int]] = [
+        ("skills", "skills", inv["skills"]),
+        ("agents", "agents", inv["agents"]),
+        ("commands", "commands", inv["commands"]),
+        ("plugins", "plugins", inv["plugins"]),
+        ("mcp", mcp_label, inv["mcp_servers"]),
+        ("projects", "projects", inv["projects_known"]),
+    ]
+
+    text = Text()
+    first = True
+    for key, label, value in chips:
+        if value == 0 and key != "plugins":
+            # Skip zero categories to save space; plugins=0 is still
+            # worth surfacing so users know their baseline isn't hiding
+            # bundled skills/agents they forgot about.
+            continue
+        colour = _INVENTORY_CHIP_COLOUR.get(key, DIM)
+        if not first:
+            text.append("  ·  ", style=DIM)
+        first = False
+        text.append(f"{value} ", style=f"bold {colour}")
+        text.append(label, style=DIM)
+    return text
+
+
+_INFORMATIONAL_GROUP_LABEL: dict[str, str] = {
+    "missing_claudeignore": "missing .claudeignore",
+    "disabled_plugin_residue": "recently-disabled plugin residue",
+    "claude_md_dead_ref": "CLAUDE.md dead references",
+}
+
+
 def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> None:
-    """Render the findings list block in the TTY renderer."""
+    """Print a one-line summary + grouped informational hints.
+
+    The picker is the real findings UI — it shows every removable item
+    with a live selection total. This block exists to (a) give users a
+    count before the picker opens and (b) surface the flag_only items
+    the picker can't show, grouped by type so we don't emit nine nearly
+    identical lines when every project is missing a ``.claudeignore``.
+
+    ``--report``/``--plain`` paths route through :func:`render_plain`
+    instead and never hit this renderer.
+    """
     console.print("")
     if not findings:
-        console.print("[dim]findings: none — nothing to clean up right now[/dim]")
+        console.print(f"[{SEVERITY_LEAN}]✓[/{SEVERITY_LEAN}] [dim]No issues found.[/dim]")
         return
-    auto = sum(1 for f in findings if f.get("auto_checked"))
-    opt_in = len(findings) - auto
-    console.print(
-        f"[bold]Found {len(findings)} issue(s).[/bold] "
-        f"[dim]{auto} auto-checked, {opt_in} opt-in.[/dim]"
-    )
-    for f in findings:
-        marker = "[#22c55e][x][/#22c55e]" if f.get("auto_checked") else "[dim][ ][/dim]"
-        scope_kind = f["scope"].get("kind", "global")
-        scope_label = f"[dim][{scope_kind:>7}][/dim]"
-        console.print(f" {marker} {scope_label} {f['title']}  [dim]· {f['reason']}[/dim]")
+
+    removable = [f for f in findings if f.get("action", {}).get("primitive") != "flag_only"]
+    informational = [f for f in findings if f.get("action", {}).get("primitive") == "flag_only"]
+    removable_tokens = sum(f.get("token_savings") or 0 for f in removable)
+
+    summary = Text()
+    summary.append(f"{len(findings)}", style=f"bold {ACCENT}")
+    summary.append(" issue(s)", style=DIM)
+    if removable:
+        summary.append("  ·  ", style=DIM)
+        summary.append(f"{len(removable)}", style=f"bold {SEVERITY_LEAN}")
+        summary.append(" removable", style=DIM)
+        if removable_tokens:
+            summary.append(f" (~{removable_tokens:,} tok)", style=DIM)
+    if informational:
+        summary.append("  ·  ", style=DIM)
+        summary.append(f"{len(informational)}", style=DIM)
+        summary.append(" informational", style=DIM)
+    console.print(summary)
+
+    if not informational:
+        return
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for f in informational:
+        groups.setdefault(f["type"], []).append(f)
+    for ftype, group in groups.items():
+        label = _INFORMATIONAL_GROUP_LABEL.get(ftype, ftype.replace("_", " "))
+        names = [_short_name(f) for f in group]
+        shown = names[:4]
+        more = f" +{len(names) - 4} more" if len(names) > len(shown) else ""
+        row = Text()
+        row.append("  · ", style=DIM)
+        row.append(f"{len(group)}", style=f"bold {DIM}")
+        row.append(f" {label}: ", style=DIM)
+        row.append(", ".join(shown), style="default")
+        if more:
+            row.append(more, style=DIM)
+        console.print(row)
+
+
+def _short_name(finding: dict[str, Any]) -> str:
+    """Extract a terse identifier for a finding used in grouped lists."""
+    from pathlib import Path as _P
+
+    scope = finding.get("scope", {})
+    project_path = scope.get("project_path")
+    if project_path:
+        return _P(project_path).name
+    action = finding.get("action", {})
+    plugin_key = action.get("plugin_key")
+    if plugin_key:
+        return str(plugin_key)
+    path = action.get("path")
+    if path:
+        return _P(path).name
+    title = finding.get("title", "")
+    return title.split()[-1] if title else "?"
