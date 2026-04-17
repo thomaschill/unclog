@@ -3,6 +3,8 @@ from __future__ import annotations
 import typer
 
 from unclog import __version__
+from unclog.app import run_scan
+from unclog.ui.output import render_default, render_json
 
 app = typer.Typer(
     name="unclog",
@@ -29,8 +31,20 @@ def root(
         is_eager=True,
         help="Show version and exit.",
     ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit a single JSON document to stdout (schema unclog.v0.1).",
+    ),
 ) -> None:
-    """Run a full audit against your Claude Code installation."""
+    """Scan the current Claude Code installation and print a report.
+
+    The interactive fix flow ships in M5. M1 is read-only: the scan
+    produces a byte-count baseline and inventory summary, with real
+    token measurements arriving in M2.
+    """
     if ctx.invoked_subcommand is not None:
         return
-    typer.echo("unclog: scaffolding in progress — run `unclog --version` for now.")
+    state = run_scan()
+    output = render_json(state) if as_json else render_default(state)
+    typer.echo(output, nl=False)
