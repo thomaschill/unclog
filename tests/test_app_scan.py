@@ -52,7 +52,9 @@ def _build_minimal_home(tmp_path: Path) -> Path:
 
     agents = home / "agents"
     agents.mkdir()
-    (agents / "planner.md").write_text("---\nname: planner\n---\n", encoding="utf-8")
+    (agents / "planner.md").write_text(
+        "---\nname: planner\ndescription: plans work\n---\n", encoding="utf-8"
+    )
 
     commands = home / "commands"
     commands.mkdir()

@@ -110,6 +110,56 @@ def test_enumerate_agents_empty_for_missing_dir(tmp_path: Path) -> None:
     assert enumerate_agents(tmp_path / "nope") == ()
 
 
+def test_enumerate_agents_recurses_into_category_dirs(tmp_path: Path) -> None:
+    agents_dir = tmp_path / "agents"
+    (agents_dir / "design").mkdir(parents=True)
+    (agents_dir / "engineering").mkdir(parents=True)
+    (agents_dir / "design" / "ui-designer.md").write_text(
+        "---\nname: ui-designer\ndescription: designs UI\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (agents_dir / "engineering" / "backend.md").write_text(
+        "---\nname: backend\ndescription: builds APIs\n---\nbody\n",
+        encoding="utf-8",
+    )
+    agents = enumerate_agents(agents_dir)
+    assert {a.slug for a in agents} == {"ui-designer", "backend"}
+
+
+def test_enumerate_agents_skips_files_without_agent_frontmatter(tmp_path: Path) -> None:
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    # README-style file: no agent frontmatter.
+    (agents_dir / "README.md").write_text("# Agents\n\nhow-to guide\n", encoding="utf-8")
+    # LICENSE-ish file: frontmatter but missing `description`.
+    (agents_dir / "LICENSE.md").write_text(
+        "---\nname: license\n---\nMIT\n", encoding="utf-8"
+    )
+    # Real agent.
+    (agents_dir / "real.md").write_text(
+        "---\nname: real\ndescription: does work\n---\nbody\n",
+        encoding="utf-8",
+    )
+    agents = enumerate_agents(agents_dir)
+    assert [a.slug for a in agents] == ["real"]
+
+
+def test_enumerate_agents_dedupes_by_slug(tmp_path: Path) -> None:
+    agents_dir = tmp_path / "agents"
+    (agents_dir / "a").mkdir(parents=True)
+    (agents_dir / "b").mkdir(parents=True)
+    (agents_dir / "a" / "dup.md").write_text(
+        "---\nname: dup\ndescription: first\n---\nA\n", encoding="utf-8"
+    )
+    (agents_dir / "b" / "dup.md").write_text(
+        "---\nname: dup\ndescription: second\n---\nB\n", encoding="utf-8"
+    )
+    agents = enumerate_agents(agents_dir)
+    assert len(agents) == 1
+    # Lexical path order: a/ sorts before b/.
+    assert agents[0].path.parent.name == "a"
+
+
 def test_enumerate_commands_lists_markdown_files(tmp_path: Path) -> None:
     commands_dir = tmp_path / "commands"
     commands_dir.mkdir()

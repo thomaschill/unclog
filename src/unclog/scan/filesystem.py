@@ -155,19 +155,34 @@ def enumerate_skills(skills_dir: Path) -> tuple[Skill, ...]:
 
 
 def enumerate_agents(agents_dir: Path) -> tuple[Agent, ...]:
-    """Return every agent found under ``agents_dir``."""
+    """Return every agent found under ``agents_dir`` (recursive).
+
+    Claude Code loads agents from nested category dirs (``agents/design/*.md``,
+    ``agents/engineering/*.md``, ...), so we ``rglob``. Non-agent files like
+    ``README.md`` or ``LICENSE.md`` share the same extension but lack agent
+    frontmatter — we filter to files whose YAML front-matter declares both
+    ``name`` and ``description``, which is the shape Claude's agent loader
+    requires. Entries with duplicate slugs are deduped (first wins,
+    lexical-path order) to match the loader's last-registration-loses behavior.
+    """
     if not agents_dir.is_dir():
         return ()
     agents: list[Agent] = []
-    for entry in sorted(agents_dir.iterdir()):
-        if not entry.is_file() or entry.suffix != ".md":
+    seen_slugs: set[str] = set()
+    for entry in sorted(agents_dir.rglob("*.md")):
+        if not entry.is_file():
             continue
         try:
             text = entry.read_text(encoding="utf-8")
         except OSError:
             continue
         frontmatter, fm_bytes, body_bytes = _split_frontmatter(text)
+        if "name" not in frontmatter or "description" not in frontmatter:
+            continue
         slug = entry.stem
+        if slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
         agents.append(
             Agent(
                 name=frontmatter.get("name") or slug,
