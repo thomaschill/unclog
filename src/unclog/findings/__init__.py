@@ -19,10 +19,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from unclog.findings.base import Action, Finding, Scope
+from unclog.findings.claude_md_context import build_context
 from unclog.findings.detectors import (
+    claude_md_dead_ref,
+    claude_md_duplicate,
+    claude_md_oversized,
     dead_mcp,
     disabled_plugin_residue,
     missing_claudeignore,
+    scope_mismatch,
     stale_plugin,
     unused_agent,
     unused_command,
@@ -59,6 +64,7 @@ def detect(
     commands, agents, skills, residue flags).
     """
     reference = now if now is not None else datetime.now(tz=UTC)
+    context = build_context(state)
     findings: list[Finding] = []
     findings.extend(dead_mcp.detect(state, activity, thresholds, now=reference))
     findings.extend(unused_mcp.detect(state, activity, thresholds, now=reference))
@@ -66,6 +72,24 @@ def detect(
     findings.extend(unused_command.detect(state, activity, thresholds, now=reference))
     findings.extend(unused_agent.detect(state, activity, thresholds, now=reference))
     findings.extend(unused_skill.detect(state, activity, thresholds, now=reference))
+    findings.extend(
+        claude_md_duplicate.detect(
+            state, activity, thresholds, now=reference, context=context
+        )
+    )
+    findings.extend(
+        scope_mismatch.detect(state, activity, thresholds, now=reference, context=context)
+    )
+    findings.extend(
+        claude_md_oversized.detect(
+            state, activity, thresholds, now=reference, context=context
+        )
+    )
+    findings.extend(
+        claude_md_dead_ref.detect(
+            state, activity, thresholds, now=reference, context=context
+        )
+    )
     findings.extend(disabled_plugin_residue.detect(state, activity, thresholds, now=reference))
     findings.extend(missing_claudeignore.detect(state, activity, thresholds, now=reference))
     return findings

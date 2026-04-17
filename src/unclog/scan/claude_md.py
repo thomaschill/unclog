@@ -150,6 +150,39 @@ def _line_is_only_ref(line: str, raw: str) -> bool:
     return False
 
 
+def iter_resolved_paths(text: str, base_dir: Path) -> list[Path]:
+    """Return every path-shaped token in ``text`` resolved to a ``Path``.
+
+    Unlike :func:`_find_dead_refs` this does not stat anything — callers
+    use the returned paths for grouping and containment tests (e.g.
+    "does every referenced path live under one project?"). Candidate
+    extraction follows the same rules as dead-ref detection: backtick
+    spans plus ``/``-, ``~/``-, ``./``-, ``../``-prefixed bare tokens,
+    with fenced code blocks skipped.
+    """
+    resolved: list[Path] = []
+    in_fence = False
+    fence_marker = ""
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            marker = stripped[:3]
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker
+            elif stripped.startswith(fence_marker):
+                in_fence = False
+                fence_marker = ""
+            continue
+        if in_fence:
+            continue
+        for raw, _ in _iter_candidates(line):
+            candidate = _resolve_candidate(raw, base_dir)
+            if candidate is not None:
+                resolved.append(candidate)
+    return resolved
+
+
 def _find_dead_refs(text: str, base_dir: Path) -> tuple[DeadRef, ...]:
     """Scan ``text`` line by line and return unresolved path references.
 
