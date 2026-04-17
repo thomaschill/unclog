@@ -39,6 +39,7 @@ class SessionSystemBlock:
     session_path: Path
     system_text: str
     tools_json: str
+    tools: tuple[dict[str, Any], ...]
     system_tokens: int
     tools_tokens: int
 
@@ -166,6 +167,7 @@ def load_session_system_block(
         session_path=session_path,
         system_text=system_text,
         tools_json=tools_json,
+        tools=tuple(tools),
         system_tokens=counter.count(system_text),
         tools_tokens=counter.count(tools_json),
     )

@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from unclog.cli import app
 from unclog.scan.config import ClaudeConfig, McpServer, Settings
 from unclog.scan.filesystem import Agent, Skill
+from unclog.scan.session import SessionSystemBlock
 from unclog.state import GlobalScope, InstallationState
 from unclog.ui.output import SCHEMA_ID, build_report, render_default, render_json
 from unclog.util.paths import claude_home
@@ -24,11 +25,12 @@ def _clear_cache() -> None:
 
 def _make_state(
     *,
-    claude_md_bytes: int = 2000,
+    claude_md_text: str = "# Global rules\n" + ("Use yarn.\n" * 50),
     skills: tuple[Skill, ...] = (),
     agents: tuple[Agent, ...] = (),
     config: ClaudeConfig | None = None,
     warnings: tuple[str, ...] = (),
+    latest_session: SessionSystemBlock | None = None,
 ) -> InstallationState:
     home = Path("/fake/.claude")
     return InstallationState(
@@ -38,10 +40,13 @@ def _make_state(
             claude_home=home,
             config=config,
             settings=Settings(),
-            claude_md_bytes=claude_md_bytes,
+            claude_md_bytes=len(claude_md_text.encode("utf-8")),
+            claude_md_text=claude_md_text,
             claude_local_md_bytes=0,
+            claude_local_md_text="",
             skills=skills,
             agents=agents,
+            latest_session=latest_session,
         ),
         warnings=warnings,
     )
@@ -53,19 +58,21 @@ def test_build_report_schema_fields() -> None:
     assert report["schema"] == SCHEMA_ID
     assert report["generated_at"] == "2026-04-17T18:42:00Z"
     assert report["claude_home"] == "/fake/.claude"
-    assert report["baseline"]["tokens_source"] == "bytes_estimate"
+    assert report["baseline"]["tokens_source"] in {"tiktoken", "session+tiktoken"}
     assert report["baseline"]["tier"] in {"lean", "typical", "clogged"}
     assert report["findings"] == []
 
 
-def test_build_report_estimates_tokens_from_bytes() -> None:
-    state = _make_state(claude_md_bytes=4000)
+def test_build_report_measures_claude_md_with_tiktoken() -> None:
+    state = _make_state(claude_md_text="hello world " * 200)
     report = build_report(state)
-    assert report["baseline"]["estimated_tokens"] == 1000  # 4000 // 4
-    assert report["baseline"]["measured_bytes"] == 4000
+    claude_md_entry = next(e for e in report["composition"] if e["source"] == "global:CLAUDE.md")
+    assert claude_md_entry["tokens_source"] == "tiktoken"
+    assert claude_md_entry["tokens"] > 0
+    assert report["baseline"]["attributed_tokens"] >= claude_md_entry["tokens"]
 
 
-def test_build_report_marks_mcp_entries_unmeasured() -> None:
+def test_build_report_marks_mcp_entries_unmeasured_without_session() -> None:
     config = ClaudeConfig(
         mcp_servers={"github": McpServer(name="github"), "notion": McpServer(name="notion")}
     )
@@ -74,8 +81,36 @@ def test_build_report_marks_mcp_entries_unmeasured() -> None:
     mcp_entries = [e for e in report["composition"] if e["source"].startswith("mcp:")]
     assert {e["source"] for e in mcp_entries} == {"mcp:github", "mcp:notion"}
     assert all(e["tokens_source"] == "unmeasured" for e in mcp_entries)
-    assert all(e["bytes"] is None for e in mcp_entries)
+    assert all(e["tokens"] is None for e in mcp_entries)
     assert report["baseline"]["unmeasured_sources"] == 2
+
+
+def test_build_report_attributes_mcp_from_session_tools() -> None:
+    config = ClaudeConfig(
+        mcp_servers={"github": McpServer(name="github"), "notion": McpServer(name="notion")}
+    )
+    session = SessionSystemBlock(
+        session_path=Path("/fake/.claude/projects/proj/abc.jsonl"),
+        system_text="You are Claude.",
+        tools_json='[{"name":"mcp__github__list"}]',
+        tools=(
+            {"name": "mcp__github__list_repos", "description": "lists", "input_schema": {}},
+            {"name": "Read", "description": "built-in", "input_schema": {}},
+        ),
+        system_tokens=10,
+        tools_tokens=25,
+    )
+    state = _make_state(config=config, latest_session=session)
+    report = build_report(state)
+    github = next(e for e in report["composition"] if e["source"] == "mcp:github")
+    notion = next(e for e in report["composition"] if e["source"] == "mcp:notion")
+    assert github["tokens_source"] == "session+tiktoken"
+    assert github["tokens"] > 0
+    # Notion is declared in config but absent from the session tools list.
+    assert notion["tokens_source"] == "unmeasured"
+    assert notion["tokens"] is None
+    assert report["baseline"]["tokens_source"] == "session+tiktoken"
+    assert report["baseline"]["estimated_tokens"] == session.total_tokens
 
 
 def test_render_json_is_valid_json_with_stable_keys() -> None:

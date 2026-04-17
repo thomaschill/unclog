@@ -131,7 +131,28 @@ def test_total_tokens_sums_system_and_tools() -> None:
         session_path=Path("/x.jsonl"),
         system_text="hi",
         tools_json="[]",
+        tools=(),
         system_tokens=5,
         tools_tokens=7,
     )
     assert block.total_tokens == 12
+
+
+def test_load_exposes_parsed_tools(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "type": "user",
+                "tools": [
+                    {"name": "mcp__github__list_repos", "description": "...", "input_schema": {}},
+                    {"name": "Read", "description": "built-in", "input_schema": {}},
+                ],
+            },
+        ],
+    )
+    block = load_session_system_block(path, TiktokenCounter())
+    assert block is not None
+    assert len(block.tools) == 2
+    assert block.tools[0]["name"] == "mcp__github__list_repos"

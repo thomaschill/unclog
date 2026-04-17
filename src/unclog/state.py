@@ -14,6 +14,7 @@ from typing import Literal
 
 from unclog.scan.config import ClaudeConfig, Settings
 from unclog.scan.filesystem import Agent, Command, InstalledPlugin, Skill
+from unclog.scan.session import SessionSystemBlock
 
 BaselineTier = Literal["lean", "typical", "clogged"]
 
@@ -44,11 +45,14 @@ class GlobalScope:
     config: ClaudeConfig | None
     settings: Settings | None
     claude_md_bytes: int
+    claude_md_text: str
     claude_local_md_bytes: int
+    claude_local_md_text: str
     skills: tuple[Skill, ...] = ()
     agents: tuple[Agent, ...] = ()
     commands: tuple[Command, ...] = ()
     installed_plugins: tuple[InstalledPlugin, ...] = ()
+    latest_session: SessionSystemBlock | None = None
 
 
 @dataclass(frozen=True)

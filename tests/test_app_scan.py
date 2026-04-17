@@ -121,3 +121,42 @@ def test_run_scan_degrades_on_malformed_claude_json(
     # of the scan still runs.
     assert state.global_scope.config is None
     assert any("Could not parse" in w for w in state.warnings)
+
+
+def test_run_scan_picks_up_latest_session_across_projects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = _build_minimal_home(tmp_path)
+    # Add a project session directory with a single session JSONL containing
+    # a system record and a tools list.
+    session_dir = home / "projects" / "-Users-tom-draper"
+    session_dir.mkdir(parents=True)
+    (session_dir / "abc.jsonl").write_text(
+        json.dumps({"type": "system", "content": "You are Claude Code. Use CLAUDE.md."})
+        + "\n"
+        + json.dumps(
+            {
+                "type": "user",
+                "tools": [
+                    {
+                        "name": "mcp__github__list_repos",
+                        "description": "list repos",
+                        "input_schema": {"type": "object"},
+                    },
+                    {
+                        "name": "Read",
+                        "description": "builtin",
+                        "input_schema": {"type": "object"},
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+
+    state = run_scan()
+    assert state.global_scope.latest_session is not None
+    assert state.global_scope.latest_session.total_tokens > 0
+    assert len(state.global_scope.latest_session.tools) == 2
