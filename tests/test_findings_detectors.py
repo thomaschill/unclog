@@ -28,6 +28,7 @@ def _state(
     settings: Settings | None = None,
     latest_session: SessionSystemBlock | None = None,
     activity: ActivityIndex | None = None,
+    mcp_invocations: dict[str, int] | None = None,
 ) -> InstallationState:
     return InstallationState(
         generated_at=NOW,
@@ -46,6 +47,7 @@ def _state(
             installed_plugins=plugins,
             latest_session=latest_session,
             activity=activity if activity is not None else ActivityIndex(),
+            mcp_invocations=MappingProxyType(mcp_invocations or {}),
         ),
     )
 
@@ -250,10 +252,28 @@ def test_dead_mcp_skipped_when_no_session() -> None:
     assert [f for f in findings if f.type == "dead_mcp"] == []
 
 
-def test_unused_mcp_is_noop_in_v0_1() -> None:
+def test_unused_mcp_flags_loaded_but_zero_invocations() -> None:
     config = ClaudeConfig(mcp_servers=MappingProxyType({"github": McpServer(name="github")}))
     session = _session_with_tools("mcp__github__list_repos")
+    # Default mcp_invocations is empty — "github" is loaded, never called.
     state = _state(config=config, latest_session=session, activity=_active_index())
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    unused = [f for f in findings if f.type == "unused_mcp"]
+    assert [f.id for f in unused] == ["unused_mcp:github"]
+    assert unused[0].auto_checked is False
+    assert unused[0].action.primitive == "comment_out_mcp"
+    assert unused[0].action.server_name == "github"
+
+
+def test_unused_mcp_respects_invocation_count() -> None:
+    config = ClaudeConfig(mcp_servers=MappingProxyType({"github": McpServer(name="github")}))
+    session = _session_with_tools("mcp__github__list_repos")
+    state = _state(
+        config=config,
+        latest_session=session,
+        activity=_active_index(),
+        mcp_invocations={"github": 3},
+    )
     findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "unused_mcp"] == []
 

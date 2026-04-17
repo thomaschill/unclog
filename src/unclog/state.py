@@ -7,9 +7,11 @@ mutates the underlying filesystem.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Literal
 
 from unclog.scan.config import ClaudeConfig, Settings
@@ -57,6 +59,12 @@ class GlobalScope:
     plugin_content: tuple[PluginContent, ...] = ()
     latest_session: SessionSystemBlock | None = None
     activity: ActivityIndex = field(default_factory=ActivityIndex)
+    # Per-MCP-server invocation count, aggregated across the latest session
+    # of every project. Zero (or absent) means "never invoked" in the
+    # window unclog can see; it is the signal unused_mcp detection uses.
+    mcp_invocations: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 @dataclass(frozen=True)

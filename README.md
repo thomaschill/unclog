@@ -13,21 +13,31 @@ unclog
 
 ## What it does
 
-`unclog` reads your `~/.claude` directory and the system block of your most
+`unclog` reads your `~/.claude` directory, the system block of your most
 recent session JSONL — the ground-truth record of what Claude Code actually
-loaded — and produces a token-cost breakdown by source. No servers spawned.
-No estimates when real measurements are available.
+loaded — and the `tool_use` records in each project's latest session to see
+which MCPs are actually getting called. It produces a token-cost breakdown
+by source. No servers spawned. No estimates when real measurements are
+available.
+
+By default, `unclog` audits your global install **and every project** listed
+in `~/.claude.json`. That's the only way cross-project CLAUDE.md duplicates
+and scope mismatches actually surface. Narrow to a single project with
+`--project <path>`.
 
 Then it offers an interactive fix selector so you can act on what you find,
 with a snapshot written before any change so every action is reversible.
 
 ## What it finds
 
-- **CLAUDE.md sections** — global and project-level, ranked by token weight,
-  with duplicate sections across projects flagged for promotion to global
-- **MCP servers** — every server definition loaded into context per turn,
-  with dead references (binary missing from `$PATH`) and never-used servers
-  surfaced
+- **CLAUDE.md sections** — global and project-level, ranked by token weight.
+  Identical sections repeated across projects are flagged as duplicates;
+  project-only advice living in global (and vice versa) surfaces as a scope
+  mismatch; sections over ~1,000 tokens are flagged for consolidation.
+- **MCP servers** — every definition loaded into context per turn. Servers
+  configured but never loaded in the latest session show up as *dead*; ones
+  that load every session but never get invoked show up as *unused* with
+  their per-session token cost attached.
 - **Skills, agents, commands** — accumulated entries silently present in
   every session, scored against invocation history
 - **Plugins** — stale installs, disabled-but-still-on-disk residue
@@ -82,15 +92,14 @@ v0.1 — Windows support is tracked for v0.2.
 ## Usage
 
 ```
-unclog                       # scan + report + interactive fix selector
+unclog                       # scan global + every known project, report, fix
+unclog --project <path>      # narrow the audit to a single project
 unclog --report              # scan + report, skip the fix flow
 unclog --json                # structured output to stdout (schema unclog.v0.1)
 unclog --plain               # ASCII-only, no colour, no animation (CI-safe)
 unclog --yes                 # apply every auto-checked finding without prompts
 unclog --dry-run             # walk the fix flow without writing anything
 unclog --no-animation        # static frames only; keeps colour
-unclog --project <path>      # audit one specific project in addition to global
-unclog --all-projects        # audit every project listed in ~/.claude.json
 
 unclog restore               # restore the most recent snapshot
 unclog restore <id>          # restore a specific snapshot
@@ -103,12 +112,16 @@ unclog restore --list        # list every snapshot on disk
 
 1. Reads `~/.claude.json`, `settings.json`, and the global `CLAUDE.md`.
 2. Enumerates skills, agents, commands, and plugin installs.
-3. Locates the most recent session JSONL across all known projects and
+3. Reads every registered project's `CLAUDE.md` / `CLAUDE.local.md` so
+   cross-scope duplicates and mismatches can be detected.
+4. Locates the most recent session JSONL across all known projects and
    parses its system block — that's what Claude Code actually loaded.
-4. Measures every text source with `tiktoken` (GPT-4 encoding) for a
+5. Aggregates `tool_use` counts across each project's latest session so
+   MCPs that load but never get called can be flagged.
+6. Measures every text source with `tiktoken` (GPT-4 encoding) for a
    reproducible, local token count.
-5. Runs detectors against the parsed state and produces a `Finding` list.
-6. Optionally renders the fix selector and applies selected actions, each
+7. Runs detectors against the parsed state and produces a `Finding` list.
+8. Optionally renders the fix selector and applies selected actions, each
    captured in a snapshot first.
 
 `unclog` is built from pure data transforms end-to-end — the scan produces

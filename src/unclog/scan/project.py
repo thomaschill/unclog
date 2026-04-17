@@ -88,20 +88,16 @@ def scan_project(project_path: Path) -> ProjectScope:
 def resolve_project_paths(
     *,
     explicit_project: Path | None,
-    all_projects: bool,
     cwd: Path,
     known_projects: tuple[Path, ...],
 ) -> tuple[Path, ...]:
     """Return the ordered set of project paths to audit.
 
-    Priority rules from spec §8.1:
-
-    - ``--project PATH`` wins and returns exactly that path.
-    - ``--all-projects`` returns every entry from ``~/.claude.json``.
-    - Otherwise, if ``cwd`` itself looks project-like (either present
-      in ``known_projects`` or carrying ``.claude/`` / ``CLAUDE.md``),
-      return just ``cwd``.
-    - Otherwise, return no projects: global-only scan.
+    - ``--project PATH`` narrows to exactly that path.
+    - Otherwise, audit every known project in ``~/.claude.json`` plus
+      ``cwd`` if ``cwd`` looks project-like but isn't yet registered.
+      The full view is the only way cross-project CLAUDE.md duplicates
+      and scope-mismatch findings actually surface, so we always take it.
 
     Paths are resolved and de-duplicated while preserving first-seen
     order so output is stable across runs.
@@ -109,17 +105,19 @@ def resolve_project_paths(
     if explicit_project is not None:
         return (explicit_project.expanduser().resolve(strict=False),)
 
-    if all_projects:
-        seen: list[Path] = []
-        for raw in known_projects:
-            resolved = raw.expanduser().resolve(strict=False)
-            if resolved not in seen:
-                seen.append(resolved)
-        return tuple(seen)
+    seen: list[Path] = []
+    seen_set: set[Path] = set()
+    for raw in known_projects:
+        resolved = raw.expanduser().resolve(strict=False)
+        if resolved not in seen_set:
+            seen.append(resolved)
+            seen_set.add(resolved)
 
     cwd_resolved = cwd.expanduser().resolve(strict=False)
-    if cwd_resolved in {p.expanduser().resolve(strict=False) for p in known_projects}:
-        return (cwd_resolved,)
-    if (cwd_resolved / ".claude").is_dir() or (cwd_resolved / "CLAUDE.md").is_file():
-        return (cwd_resolved,)
-    return ()
+    looks_like_project = (
+        (cwd_resolved / ".claude").is_dir() or (cwd_resolved / "CLAUDE.md").is_file()
+    )
+    if cwd_resolved not in seen_set and looks_like_project:
+        seen.append(cwd_resolved)
+
+    return tuple(seen)
