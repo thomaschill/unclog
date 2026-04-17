@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+from rich.console import Console
+
+from unclog.ui.hero import (
+    DEFAULT_TREEMAP_WIDTH,
+    _apportion_widths,
+    render_hero,
+    render_treemap,
+)
+from unclog.ui.theme import SEVERITY_CLOGGED, SEVERITY_LEAN, SEVERITY_TYPICAL
+from unclog.ui.wordmark import wordmark
+
+
+def _capture(renderable: object) -> str:
+    console = Console(
+        record=True, width=120, force_terminal=True, no_color=False, color_system="truecolor"
+    )
+    console.print(renderable)
+    return console.export_text()
+
+
+def _capture_ansi(renderable: object) -> str:
+    console = Console(record=True, width=120, force_terminal=True, color_system="truecolor")
+    console.print(renderable)
+    return console.export_text(styles=True)
+
+
+def _rgb(hex_colour: str) -> str:
+    h = hex_colour.lstrip("#")
+    return f"{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}"
+
+
+def test_hero_renders_number_with_tier_label() -> None:
+    baseline = {
+        "estimated_tokens": 42180,
+        "tokens_source": "session+tiktoken",
+        "tier": "typical",
+        "attributed_tokens": 41000,
+        "unmeasured_sources": 0,
+    }
+    out = _capture(render_hero(baseline))
+    assert "42,180" in out
+    assert "typical" in out
+    assert "measured from latest session" in out
+
+
+def test_hero_colours_lean_tier_green() -> None:
+    baseline = {
+        "estimated_tokens": 8000,
+        "tokens_source": "tiktoken",
+        "tier": "lean",
+        "attributed_tokens": 8000,
+        "unmeasured_sources": 0,
+    }
+    ansi = _capture_ansi(render_hero(baseline))
+    assert _rgb(SEVERITY_LEAN) in ansi
+
+
+def test_hero_colours_clogged_tier_red() -> None:
+    baseline = {
+        "estimated_tokens": 80000,
+        "tokens_source": "session+tiktoken",
+        "tier": "clogged",
+        "attributed_tokens": 70000,
+        "unmeasured_sources": 3,
+    }
+    ansi = _capture_ansi(render_hero(baseline))
+    assert _rgb(SEVERITY_CLOGGED) in ansi
+    plain = _capture(render_hero(baseline))
+    assert "3 MCP source(s) unmeasured" in plain
+
+
+def test_hero_typical_tier_amber() -> None:
+    baseline = {
+        "estimated_tokens": 30000,
+        "tokens_source": "tiktoken",
+        "tier": "typical",
+        "attributed_tokens": 30000,
+        "unmeasured_sources": 0,
+    }
+    ansi = _capture_ansi(render_hero(baseline))
+    assert _rgb(SEVERITY_TYPICAL) in ansi
+
+
+def test_treemap_renders_segment_labels_for_large_shares() -> None:
+    composition = [
+        {"source": "mcp:github", "tokens": 8000},
+        {"source": "global:CLAUDE.md", "tokens": 1200},
+        {"source": "skills:descriptions (n=22)", "tokens": 800},
+    ]
+    out = _capture(render_treemap(composition, width=DEFAULT_TREEMAP_WIDTH))
+    # Largest segment (>= 12%) should carry an inline label.
+    assert "mcp:github" in out
+    # Legend shows exact counts for all entries.
+    assert "8,000 tok" in out
+    assert "1,200 tok" in out
+    assert "800 tok" in out
+
+
+def test_treemap_skips_unmeasured_entries() -> None:
+    composition = [
+        {"source": "mcp:github", "tokens": 5000},
+        {"source": "mcp:notion", "tokens": None},
+    ]
+    out = _capture(render_treemap(composition))
+    assert "mcp:github" in out
+    assert "mcp:notion" not in out
+
+
+def test_treemap_empty_when_nothing_measurable() -> None:
+    out = _capture(render_treemap([{"source": "mcp:notion", "tokens": None}]))
+    assert "no measurable composition" in out
+
+
+def test_apportion_widths_sums_to_total() -> None:
+    widths = _apportion_widths([0.5, 0.3, 0.2], 80)
+    assert sum(widths) == 80
+    # Non-zero shares get at least one column.
+    assert all(w >= 1 for w in widths)
+
+
+def test_apportion_widths_handles_tiny_share() -> None:
+    widths = _apportion_widths([0.98, 0.01, 0.01], 50)
+    assert sum(widths) == 50
+    assert widths[1] >= 1 and widths[2] >= 1
+
+
+def test_wordmark_includes_product_name_and_version() -> None:
+    out = _capture(wordmark())
+    assert "unclog" in out
+    assert "local-only audit" in out

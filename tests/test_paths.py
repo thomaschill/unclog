@@ -70,6 +70,36 @@ def test_claude_home_ignores_empty_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert claude_home() == (Path.home() / ".claude").resolve()
 
 
+def test_config_json_prefers_inside_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    (tmp_path / ".claude.json").write_text("{}", encoding="utf-8")
+    p = claude_paths()
+    assert p.config_json == tmp_path.resolve() / ".claude.json"
+
+
+def test_config_json_falls_back_to_parent_layout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Default install puts ~/.claude.json alongside ~/.claude/, not inside.
+    parent = tmp_path / "root"
+    home = parent / ".claude"
+    home.mkdir(parents=True)
+    (parent / ".claude.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    p = claude_paths()
+    assert p.config_json == parent.resolve() / ".claude.json"
+
+
+def test_config_json_defaults_to_inside_when_neither_exists(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    p = claude_paths()
+    assert p.config_json == tmp_path.resolve() / ".claude.json"
+
+
 def test_claude_home_is_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     first = claude_home()

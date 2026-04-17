@@ -1,16 +1,21 @@
 """Render an :class:`InstallationState` to stdout in the requested format.
 
-M1 ships two modes:
+M2 swaps the byte-count estimates used in M1 for real tiktoken
+measurements. Every composition entry now reports a concrete token
+count. MCP servers are attributed from the ``tools`` array of the
+most recent session JSONL across all known projects — we measure what
+Claude Code actually injected rather than what might theoretically
+load.
 
-- ``default``: terse plain-text summary — will be replaced by the
-  hero/treemap report in M6.
-- ``json``: stable machine-readable schema ``unclog.v0.1``.
+When no session JSONL is available anywhere (fresh installs, or a home
+that has never opened a project), MCP entries stay marked
+``unmeasured`` and the baseline degrades to the sum of file-backed
+sources. Tokens for CLAUDE.md, skills, and agents are always measured
+(we have the source bytes on disk).
 
-Token counts are estimated as ``bytes // 4`` while M1 lacks a tokenizer.
-Each composition entry advertises its ``tokens_source`` so consumers know
-whether the number is a real tokenizer measurement or a byte estimate.
-M2 replaces byte estimates with tiktoken / anthropic counts and adds
-``mcp:*`` entries from the session JSONL system block.
+``--json`` output keeps the stable ``unclog.v0.1`` schema shape. Field
+names that used to advertise ``bytes_estimate`` now read ``tiktoken``
+(or ``unmeasured`` for MCP without a session).
 """
 
 from __future__ import annotations
@@ -18,82 +23,121 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from rich.console import Console
+
 from unclog import __version__
+from unclog.scan.session import SessionSystemBlock
+from unclog.scan.tokens import TiktokenCounter, TokenCounter
 from unclog.state import InstallationState, tier_for_baseline
+from unclog.ui.hero import render_hero, render_treemap
+from unclog.ui.wordmark import wordmark
 
 SCHEMA_ID = "unclog.v0.1"
-BYTES_PER_TOKEN_ESTIMATE = 4
+
+# Token naming convention for MCP tools in Claude Code sessions:
+# ``mcp__<server>__<tool>``. Built-in tools (Read, Write, Bash, etc.)
+# do not carry this prefix.
+_MCP_TOOL_PREFIX = "mcp__"
 
 
-def _estimate_tokens(byte_count: int) -> int:
-    return byte_count // BYTES_PER_TOKEN_ESTIMATE
+def _mcp_attribution(session: SessionSystemBlock, counter: TokenCounter) -> dict[str, int]:
+    """Group session tools by MCP server name and sum per-tool token counts.
+
+    Tools that don't match the ``mcp__<server>__`` convention (built-in
+    Claude Code tools like ``Read`` / ``Bash``) are excluded.
+    """
+    per_server: dict[str, int] = {}
+    for tool in session.tools:
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.startswith(_MCP_TOOL_PREFIX):
+            continue
+        remainder = name[len(_MCP_TOOL_PREFIX) :]
+        server_name, _, _ = remainder.partition("__")
+        if not server_name:
+            continue
+        blob = json.dumps(tool, separators=(",", ":"))
+        per_server[server_name] = per_server.get(server_name, 0) + counter.count(blob)
+    return per_server
 
 
-def build_composition(state: InstallationState) -> list[dict[str, Any]]:
+def build_composition(state: InstallationState, counter: TokenCounter) -> list[dict[str, Any]]:
     """Return the composition breakdown, largest first."""
     entries: list[dict[str, Any]] = []
     gs = state.global_scope
 
-    if gs.claude_md_bytes:
+    if gs.claude_md_text:
         entries.append(
             {
                 "source": "global:CLAUDE.md",
                 "scope": "global",
                 "bytes": gs.claude_md_bytes,
-                "estimated_tokens": _estimate_tokens(gs.claude_md_bytes),
-                "tokens_source": "bytes_estimate",
+                "tokens": counter.count(gs.claude_md_text),
+                "tokens_source": "tiktoken",
             }
         )
-    if gs.claude_local_md_bytes:
+    if gs.claude_local_md_text:
         entries.append(
             {
                 "source": "global:CLAUDE.local.md",
                 "scope": "global",
                 "bytes": gs.claude_local_md_bytes,
-                "estimated_tokens": _estimate_tokens(gs.claude_local_md_bytes),
-                "tokens_source": "bytes_estimate",
+                "tokens": counter.count(gs.claude_local_md_text),
+                "tokens_source": "tiktoken",
             }
         )
 
-    skills_bytes = sum(s.frontmatter_bytes for s in gs.skills)
-    if skills_bytes:
+    if gs.skills:
+        skill_tokens = sum(counter.count(f"{s.name}: {s.description or ''}") for s in gs.skills)
+        skill_bytes = sum(s.frontmatter_bytes for s in gs.skills)
         entries.append(
             {
                 "source": f"skills:descriptions (n={len(gs.skills)})",
                 "scope": "global",
-                "bytes": skills_bytes,
-                "estimated_tokens": _estimate_tokens(skills_bytes),
-                "tokens_source": "bytes_estimate",
-                "note": "frontmatter bytes - skill descriptions loaded on every session",
+                "bytes": skill_bytes,
+                "tokens": skill_tokens,
+                "tokens_source": "tiktoken",
+                "note": "name + description per skill, loaded on every session",
             }
         )
 
-    agents_bytes = sum(a.frontmatter_bytes for a in gs.agents)
-    if agents_bytes:
+    if gs.agents:
+        agent_tokens = sum(counter.count(f"{a.name}: {a.description or ''}") for a in gs.agents)
+        agent_bytes = sum(a.frontmatter_bytes for a in gs.agents)
         entries.append(
             {
                 "source": f"agents:descriptions (n={len(gs.agents)})",
                 "scope": "global",
-                "bytes": agents_bytes,
-                "estimated_tokens": _estimate_tokens(agents_bytes),
-                "tokens_source": "bytes_estimate",
+                "bytes": agent_bytes,
+                "tokens": agent_tokens,
+                "tokens_source": "tiktoken",
             }
         )
 
     mcp_servers = gs.config.mcp_servers if gs.config else {}
+    session = gs.latest_session
+    attribution = _mcp_attribution(session, counter) if session else {}
     for name in sorted(mcp_servers):
+        measured = attribution.get(name)
         entries.append(
             {
                 "source": f"mcp:{name}",
                 "scope": "global",
                 "bytes": None,
-                "estimated_tokens": None,
-                "tokens_source": "unmeasured",
-                "note": "schema cost requires session JSONL parse (M2)",
+                "tokens": measured if measured is not None else None,
+                "tokens_source": "session+tiktoken" if measured is not None else "unmeasured",
+                "note": (
+                    None
+                    if measured is not None
+                    else "no session JSONL found - open this MCP in Claude Code once to measure"
+                ),
             }
         )
 
-    entries.sort(key=lambda e: e.get("bytes") or -1, reverse=True)
+    def _rank(entry: dict[str, Any]) -> int:
+        tokens = entry.get("tokens")
+        return tokens if isinstance(tokens, int) else -1
+
+    entries.sort(key=_rank, reverse=True)
     return entries
 
 
@@ -109,24 +153,40 @@ def _inventory(state: InstallationState) -> dict[str, int]:
     }
 
 
+def _baseline(
+    composition: list[dict[str, Any]], session: SessionSystemBlock | None
+) -> dict[str, Any]:
+    attributed_tokens = sum(e["tokens"] for e in composition if isinstance(e.get("tokens"), int))
+    unmeasured_sources = sum(1 for e in composition if e["tokens_source"] == "unmeasured")
+
+    if session is not None:
+        total = session.total_tokens
+        tokens_source = "session+tiktoken"
+    else:
+        total = attributed_tokens
+        tokens_source = "tiktoken" if attributed_tokens else "empty"
+
+    return {
+        "estimated_tokens": total,
+        "attributed_tokens": attributed_tokens,
+        "tokens_source": tokens_source,
+        "tier": tier_for_baseline(total),
+        "unmeasured_sources": unmeasured_sources,
+        "session_path": str(session.session_path) if session else None,
+    }
+
+
 def build_report(state: InstallationState) -> dict[str, Any]:
     """Return the full machine-readable report as a plain dict."""
-    composition = build_composition(state)
-    measured_bytes = sum(e["bytes"] or 0 for e in composition)
-    baseline_tokens = _estimate_tokens(measured_bytes)
-
+    counter = TiktokenCounter()
+    composition = build_composition(state, counter)
+    session = state.global_scope.latest_session
     return {
         "schema": SCHEMA_ID,
         "unclog_version": __version__,
         "generated_at": state.generated_at.isoformat().replace("+00:00", "Z"),
         "claude_home": str(state.claude_home),
-        "baseline": {
-            "estimated_tokens": baseline_tokens,
-            "tokens_source": "bytes_estimate",
-            "tier": tier_for_baseline(baseline_tokens),
-            "measured_bytes": measured_bytes,
-            "unmeasured_sources": sum(1 for e in composition if e["tokens_source"] == "unmeasured"),
-        },
+        "baseline": _baseline(composition, session),
         "inventory": _inventory(state),
         "composition": composition,
         "findings": [],
@@ -140,39 +200,38 @@ def render_json(state: InstallationState) -> str:
     return json.dumps(build_report(state), indent=2, sort_keys=False)
 
 
-def render_default(state: InstallationState) -> str:
-    """Plain-text summary until M6 delivers the hero report."""
+def render_plain(state: InstallationState) -> str:
+    """ASCII-only, colour-free text render. Used for ``--plain`` and non-TTY."""
     report = build_report(state)
     lines: list[str] = []
-    lines.append(f"unclog {report['unclog_version']}  ·  schema {report['schema']}")
+    lines.append(f"unclog {report['unclog_version']}  |  schema {report['schema']}")
     lines.append(f"claude_home: {report['claude_home']}")
     lines.append("")
     baseline = report["baseline"]
     lines.append(
-        f"baseline (byte estimate): ~{baseline['estimated_tokens']:,} tokens  [{baseline['tier']}]"
+        f"baseline: ~{baseline['estimated_tokens']:,} tokens  "
+        f"[{baseline['tier']}]  ({baseline['tokens_source']})"
     )
-    if baseline["unmeasured_sources"]:
+    if baseline.get("unmeasured_sources"):
         lines.append(
-            f"  ({baseline['unmeasured_sources']} sources unmeasured — "
-            f"session JSONL parse arrives in M2)"
+            f"  ({baseline['unmeasured_sources']} MCP source(s) unmeasured - "
+            f"open them in Claude Code to record a session)"
         )
     lines.append("")
     inv = report["inventory"]
     lines.append(
         "inventory: "
-        f"{inv['skills']} skills · {inv['agents']} agents · "
-        f"{inv['commands']} commands · {inv['plugins']} plugins · "
-        f"{inv['mcp_servers']} MCP servers · "
+        f"{inv['skills']} skills | {inv['agents']} agents | "
+        f"{inv['commands']} commands | {inv['plugins']} plugins | "
+        f"{inv['mcp_servers']} MCP servers | "
         f"{inv['projects_known']} known projects"
     )
     if report["composition"]:
         lines.append("")
         lines.append("composition (largest first):")
         for entry in report["composition"]:
-            if entry["bytes"] is None:
-                size = "unmeasured"
-            else:
-                size = f"{entry['bytes']:>8,} B"
+            tokens = entry.get("tokens")
+            size = "unmeasured" if tokens is None else f"{tokens:>8,} tok"
             lines.append(f"  {size}  {entry['source']}")
     if report["warnings"]:
         lines.append("")
@@ -180,3 +239,30 @@ def render_default(state: InstallationState) -> str:
         for w in report["warnings"]:
             lines.append(f"  ! {w}")
     return "\n".join(lines) + "\n"
+
+
+def render_rich(state: InstallationState, console: Console) -> None:
+    """Pretty TTY render: wordmark, hero, treemap, inventory."""
+    report = build_report(state)
+    baseline = report["baseline"]
+    inv = report["inventory"]
+
+    console.print(wordmark())
+    console.print("")
+    console.print(render_hero(baseline))
+    console.print("")
+    if report["composition"]:
+        console.print(render_treemap(report["composition"]))
+        console.print("")
+    console.print(
+        "[dim]"
+        f"{inv['skills']} skills · {inv['agents']} agents · "
+        f"{inv['commands']} commands · {inv['plugins']} plugins · "
+        f"{inv['mcp_servers']} MCP servers · "
+        f"{inv['projects_known']} known projects"
+        "[/dim]"
+    )
+    if report["warnings"]:
+        console.print("")
+        for warning in report["warnings"]:
+            console.print(f"[#eab308]![/#eab308] [dim]{warning}[/dim]")
