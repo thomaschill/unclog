@@ -11,6 +11,7 @@ from unclog.cli import app
 from unclog.scan.config import ClaudeConfig, McpServer, Settings
 from unclog.scan.filesystem import Agent, Skill
 from unclog.scan.session import SessionSystemBlock
+from unclog.scan.stats import ActivityIndex
 from unclog.state import GlobalScope, InstallationState
 from unclog.ui.output import SCHEMA_ID, build_report, render_json, render_plain
 from unclog.util.paths import claude_home
@@ -31,6 +32,7 @@ def _make_state(
     config: ClaudeConfig | None = None,
     warnings: tuple[str, ...] = (),
     latest_session: SessionSystemBlock | None = None,
+    activity: ActivityIndex | None = None,
 ) -> InstallationState:
     home = Path("/fake/.claude")
     return InstallationState(
@@ -47,6 +49,7 @@ def _make_state(
             skills=skills,
             agents=agents,
             latest_session=latest_session,
+            activity=activity if activity is not None else ActivityIndex(),
         ),
         warnings=warnings,
     )
@@ -170,3 +173,50 @@ def test_cli_json_flag_emits_valid_json(monkeypatch: pytest.MonkeyPatch, tmp_pat
     parsed = json.loads(result.stdout)
     assert parsed["schema"] == SCHEMA_ID
     assert parsed["findings"] == []
+
+
+def test_build_report_emits_dead_mcp_finding_as_json() -> None:
+    config = ClaudeConfig(
+        mcp_servers={"github": McpServer(name="github"), "notion": McpServer(name="notion")}
+    )
+    # A session that loaded github's tools but not notion's.
+    session = SessionSystemBlock(
+        session_path=Path("/fake/.claude/projects/x/a.jsonl"),
+        system_text="sys",
+        tools_json="[]",
+        tools=(
+            {"name": "mcp__github__list_repos", "description": "...", "input_schema": {}},
+        ),
+        system_tokens=5,
+        tools_tokens=5,
+    )
+    # Active install so dead_mcp isn't suppressed by dormant-install rules.
+    activity = ActivityIndex(last_active_overall=datetime(2026, 4, 16, tzinfo=UTC))
+    state = _make_state(config=config, latest_session=session, activity=activity)
+    report = build_report(state)
+    types = [f["type"] for f in report["findings"]]
+    assert "dead_mcp" in types
+    notion_finding = next(f for f in report["findings"] if f["id"] == "dead_mcp:notion")
+    assert notion_finding["auto_checked"] is False
+    assert notion_finding["action"]["primitive"] == "comment_out_mcp"
+    assert notion_finding["action"]["server_name"] == "notion"
+
+
+def test_render_plain_lists_findings_with_selection_markers() -> None:
+    config = ClaudeConfig(mcp_servers={"notion": McpServer(name="notion")})
+    session = SessionSystemBlock(
+        session_path=Path("/fake/.claude/projects/x/a.jsonl"),
+        system_text="sys",
+        tools_json="[]",
+        tools=(),
+        system_tokens=1,
+        tools_tokens=0,
+    )
+    activity = ActivityIndex(last_active_overall=datetime(2026, 4, 16, tzinfo=UTC))
+    state = _make_state(config=config, latest_session=session, activity=activity)
+    out = render_plain(state)
+    assert "findings:" in out
+    # Dead MCP is opt-in, so it renders with the empty marker.
+    assert "[ ]" in out
+    assert "dead_mcp" not in out  # detector emits a human title, not the type string
+    assert "notion" in out

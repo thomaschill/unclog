@@ -26,11 +26,15 @@ from typing import Any
 from rich.console import Console
 
 from unclog import __version__
+from unclog.findings import detect as detect_findings
+from unclog.findings import load_thresholds
+from unclog.findings.base import Finding
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.tokens import TiktokenCounter, TokenCounter
 from unclog.state import InstallationState, tier_for_baseline
 from unclog.ui.hero import render_hero, render_treemap
 from unclog.ui.wordmark import wordmark
+from unclog.util.paths import ClaudePaths
 
 SCHEMA_ID = "unclog.v0.1"
 
@@ -176,11 +180,29 @@ def _baseline(
     }
 
 
+def _load_findings(state: InstallationState) -> list[Finding]:
+    """Run all detectors against ``state`` using the user's thresholds.
+
+    The threshold config is loaded relative to the scanned ``claude_home``
+    so the same state can be reported from different CWDs without
+    picking up ambient config.
+    """
+    paths = ClaudePaths(home=state.claude_home)
+    thresholds = load_thresholds(paths.config_toml)
+    return detect_findings(
+        state,
+        state.global_scope.activity,
+        thresholds,
+        now=state.generated_at,
+    )
+
+
 def build_report(state: InstallationState) -> dict[str, Any]:
     """Return the full machine-readable report as a plain dict."""
     counter = TiktokenCounter()
     composition = build_composition(state, counter)
     session = state.global_scope.latest_session
+    findings = _load_findings(state)
     return {
         "schema": SCHEMA_ID,
         "unclog_version": __version__,
@@ -189,7 +211,7 @@ def build_report(state: InstallationState) -> dict[str, Any]:
         "baseline": _baseline(composition, session),
         "inventory": _inventory(state),
         "composition": composition,
-        "findings": [],
+        "findings": [f.to_json() for f in findings],
         "warnings": list(state.warnings),
         "projects_audited": [],
     }
@@ -233,6 +255,20 @@ def render_plain(state: InstallationState) -> str:
             tokens = entry.get("tokens")
             size = "unmeasured" if tokens is None else f"{tokens:>8,} tok"
             lines.append(f"  {size}  {entry['source']}")
+    if report["findings"]:
+        lines.append("")
+        auto = sum(1 for f in report["findings"] if f.get("auto_checked"))
+        lines.append(
+            f"findings: {len(report['findings'])} "
+            f"({auto} auto-checked, {len(report['findings']) - auto} opt-in)"
+        )
+        for f in report["findings"]:
+            marker = "[x]" if f.get("auto_checked") else "[ ]"
+            scope = f["scope"].get("kind", "global")
+            lines.append(f"  {marker} [{scope:>7}] {f['title']} - {f['reason']}")
+    else:
+        lines.append("")
+        lines.append("findings: none")
     if report["warnings"]:
         lines.append("")
         lines.append("warnings:")
@@ -262,7 +298,27 @@ def render_rich(state: InstallationState, console: Console) -> None:
         f"{inv['projects_known']} known projects"
         "[/dim]"
     )
+    _render_findings_rich(report["findings"], console)
     if report["warnings"]:
         console.print("")
         for warning in report["warnings"]:
             console.print(f"[#eab308]![/#eab308] [dim]{warning}[/dim]")
+
+
+def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> None:
+    """Render the findings list block in the TTY renderer."""
+    console.print("")
+    if not findings:
+        console.print("[dim]findings: none — nothing to clean up right now[/dim]")
+        return
+    auto = sum(1 for f in findings if f.get("auto_checked"))
+    opt_in = len(findings) - auto
+    console.print(
+        f"[bold]Found {len(findings)} issue(s).[/bold] "
+        f"[dim]{auto} auto-checked, {opt_in} opt-in.[/dim]"
+    )
+    for f in findings:
+        marker = "[#22c55e][x][/#22c55e]" if f.get("auto_checked") else "[dim][ ][/dim]"
+        scope_kind = f["scope"].get("kind", "global")
+        scope_label = f"[dim][{scope_kind:>7}][/dim]"
+        console.print(f" {marker} {scope_label} {f['title']}  [dim]· {f['reason']}[/dim]")
