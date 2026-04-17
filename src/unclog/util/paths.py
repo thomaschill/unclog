@@ -21,7 +21,22 @@ class ClaudePaths:
 
     @property
     def config_json(self) -> Path:
-        return self.home / ".claude.json"
+        """Resolve ``.claude.json`` with the two-location layout.
+
+        Default installs place it at ``~/.claude.json`` alongside
+        ``~/.claude/``. ``CLAUDE_CONFIG_DIR`` overrides nest it *inside*
+        the chosen directory. We pick whichever exists, preferring the
+        inside variant when both are present, so either layout works.
+        """
+        inside = self.home / ".claude.json"
+        if inside.exists():
+            return inside
+        outside = self.home.parent / ".claude.json"
+        if outside.exists():
+            return outside
+        # Neither exists: prefer the inside location as the write-target
+        # so generated paths are consistent with the env-override layout.
+        return inside
 
     @property
     def settings_json(self) -> Path:
