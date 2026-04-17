@@ -9,7 +9,12 @@ from rich.console import Console
 
 from unclog import __version__
 from unclog.app import run_scan
+from unclog.apply.restore import restore_snapshot
+from unclog.apply.snapshot import SnapshotError, list_snapshots, load_snapshot
+from unclog.state import InstallationState
+from unclog.ui.interactive import InteractiveOptions, run_interactive
 from unclog.ui.output import render_json, render_plain, render_rich
+from unclog.util.paths import claude_paths
 
 app = typer.Typer(
     name="unclog",
@@ -73,24 +78,156 @@ def root(
         "--all-projects",
         help="Audit every project listed in ~/.claude.json alongside global.",
     ),
+    report_only: bool = typer.Option(
+        False,
+        "--report",
+        help="Scan and report, then exit without running the interactive fix flow.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Run the interactive flow without writing files or creating a snapshot.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Apply every auto-checked finding without prompting.",
+    ),
+    no_animation: bool = typer.Option(
+        False,
+        "--no-animation",
+        help="Disable motion (spinners, countdowns). Kept for M6; currently a no-op.",
+    ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
 
-    The interactive fix flow ships in M5. M2 is read-only: the scan
-    produces a real token baseline via tiktoken, attributes MCP cost
-    from the latest project session JSONL, and renders the result as
-    the hero number + treemap in the default TTY mode.
+    The default mode prints the report, then (if findings exist and
+    stdout is a TTY) walks through the interactive fix selector.
+    ``--report``, ``--json``, and ``--plain`` all suppress the fix
+    flow. ``--dry-run`` runs prompts but writes nothing; ``--yes``
+    skips prompts and applies auto-checked findings only.
     """
     if ctx.invoked_subcommand is not None:
         return
     if project is not None and all_projects:
         raise typer.BadParameter("--project and --all-projects are mutually exclusive")
+    if dry_run and yes:
+        raise typer.BadParameter("--dry-run and --yes are mutually exclusive")
+    if report_only and (dry_run or yes):
+        raise typer.BadParameter("--report cannot be combined with --dry-run or --yes")
+
     state = run_scan(project=project, all_projects=all_projects)
+
     if as_json:
         typer.echo(render_json(state))
         return
-    if _should_go_plain(plain):
+
+    plain_mode = _should_go_plain(plain)
+    if plain_mode:
         typer.echo(render_plain(state), nl=False)
+    else:
+        console = Console()
+        render_rich(state, console)
+
+    if report_only or as_json or plain_mode:
         return
+
+    _launch_interactive(
+        state,
+        dry_run=dry_run,
+        yes=yes,
+        no_animation=no_animation,
+    )
+
+
+def _launch_interactive(
+    state: InstallationState,
+    *,
+    dry_run: bool,
+    yes: bool,
+    no_animation: bool,
+) -> None:
+    """Gate the interactive fix flow behind the scan + findings layer."""
+    from unclog.findings import detect, load_thresholds
+
+    paths = claude_paths()
+    thresholds = load_thresholds(paths.config_toml)
+    findings = detect(
+        state,
+        state.global_scope.activity,
+        thresholds,
+        now=state.generated_at,
+    )
+    if not findings:
+        return
+    project_paths = tuple(p.path for p in state.project_scopes if p.exists)
     console = Console()
-    render_rich(state, console)
+    run_interactive(
+        findings,
+        claude_home=state.claude_home,
+        project_paths=project_paths,
+        console=console,
+        options=InteractiveOptions(
+            dry_run=dry_run,
+            yes=yes,
+            no_animation=no_animation,
+        ),
+    )
+
+
+@app.command("restore")
+def restore(
+    snapshot_id: str = typer.Argument(
+        "latest",
+        help="Snapshot id to restore. Use 'latest' (default) or run without an id to list.",
+    ),
+    list_only: bool = typer.Option(
+        False,
+        "--list",
+        help="List every snapshot without restoring.",
+    ),
+) -> None:
+    """Restore a previous ``unclog`` snapshot.
+
+    With no arguments, ``unclog restore`` restores the most recent
+    snapshot. ``unclog restore <id>`` targets a specific one.
+    ``unclog restore --list`` enumerates every snapshot on disk.
+    """
+    paths = claude_paths()
+    console = Console()
+    if list_only:
+        _render_snapshot_list(paths.snapshots_dir, console)
+        return
+
+    try:
+        snapshot = load_snapshot(paths.snapshots_dir, snapshot_id)
+    except SnapshotError as exc:
+        console.print(f"[#ef4444]{exc}[/#ef4444]")
+        raise typer.Exit(code=1) from exc
+
+    result = restore_snapshot(snapshot)
+    console.print(
+        f"[#22c55e]\u2713[/#22c55e] Restored snapshot [bold]{snapshot.id}[/bold] "
+        f"({len(result.restored)} action(s))"
+    )
+    if result.failed:
+        console.print(
+            f"[#ef4444]! {len(result.failed)} action(s) could not be restored:[/#ef4444]"
+        )
+        for action, reason in result.failed:
+            console.print(f"  [dim]- {action.original_path}: {reason}[/dim]")
+        raise typer.Exit(code=1)
+
+
+def _render_snapshot_list(snapshots_dir: Path, console: Console) -> None:
+    snapshots = list_snapshots(snapshots_dir)
+    if not snapshots:
+        console.print(f"[dim]No snapshots under {snapshots_dir}[/dim]")
+        return
+    console.print(f"[bold]{len(snapshots)} snapshot(s)[/bold] [dim]{snapshots_dir}[/dim]")
+    for snap in snapshots:
+        created = snap.created_at.isoformat().replace("+00:00", "Z")
+        console.print(
+            f"  [bold]{snap.id}[/bold] [dim]{created}  {len(snap.actions)} action(s)[/dim]"
+        )
