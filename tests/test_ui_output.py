@@ -12,7 +12,7 @@ from unclog.scan.config import ClaudeConfig, McpServer, Settings
 from unclog.scan.filesystem import Agent, Skill
 from unclog.scan.session import SessionSystemBlock
 from unclog.state import GlobalScope, InstallationState
-from unclog.ui.output import SCHEMA_ID, build_report, render_default, render_json
+from unclog.ui.output import SCHEMA_ID, build_report, render_json, render_plain
 from unclog.util.paths import claude_home
 
 runner = CliRunner()
@@ -132,20 +132,35 @@ def test_render_json_is_valid_json_with_stable_keys() -> None:
         assert key in parsed
 
 
-def test_render_default_includes_baseline_and_inventory() -> None:
+def test_render_plain_includes_baseline_and_inventory() -> None:
     state = _make_state()
-    out = render_default(state)
+    out = render_plain(state)
     assert "unclog" in out
     assert "baseline" in out
     assert "inventory" in out
 
 
-def test_cli_default_outputs_plain_text(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_render_plain_is_ascii_only() -> None:
+    state = _make_state()
+    out = render_plain(state)
+    # spec §11.9: --plain enforces ASCII
+    assert out == out.encode("ascii", errors="replace").decode("ascii")
+
+
+def test_cli_plain_flag_outputs_ascii(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    result = runner.invoke(app, [])
+    result = runner.invoke(app, ["--plain"])
     assert result.exit_code == 0
     assert "unclog" in result.stdout
     assert "baseline" in result.stdout
+
+
+def test_cli_non_tty_falls_back_to_plain(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    # CliRunner captures stdout as a StringIO, so isatty() is False.
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    assert "unclog" in result.stdout
 
 
 def test_cli_json_flag_emits_valid_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

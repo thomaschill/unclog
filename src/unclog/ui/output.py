@@ -23,10 +23,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from rich.console import Console
+
 from unclog import __version__
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.tokens import TiktokenCounter, TokenCounter
 from unclog.state import InstallationState, tier_for_baseline
+from unclog.ui.hero import render_hero, render_treemap
+from unclog.ui.wordmark import wordmark
 
 SCHEMA_ID = "unclog.v0.1"
 
@@ -196,11 +200,11 @@ def render_json(state: InstallationState) -> str:
     return json.dumps(build_report(state), indent=2, sort_keys=False)
 
 
-def render_default(state: InstallationState) -> str:
-    """Plain-text summary until the hero/treemap renderer arrives."""
+def render_plain(state: InstallationState) -> str:
+    """ASCII-only, colour-free text render. Used for ``--plain`` and non-TTY."""
     report = build_report(state)
     lines: list[str] = []
-    lines.append(f"unclog {report['unclog_version']}  ·  schema {report['schema']}")
+    lines.append(f"unclog {report['unclog_version']}  |  schema {report['schema']}")
     lines.append(f"claude_home: {report['claude_home']}")
     lines.append("")
     baseline = report["baseline"]
@@ -208,18 +212,18 @@ def render_default(state: InstallationState) -> str:
         f"baseline: ~{baseline['estimated_tokens']:,} tokens  "
         f"[{baseline['tier']}]  ({baseline['tokens_source']})"
     )
-    if baseline["unmeasured_sources"]:
+    if baseline.get("unmeasured_sources"):
         lines.append(
-            f"  ({baseline['unmeasured_sources']} MCP source(s) unmeasured — "
+            f"  ({baseline['unmeasured_sources']} MCP source(s) unmeasured - "
             f"open them in Claude Code to record a session)"
         )
     lines.append("")
     inv = report["inventory"]
     lines.append(
         "inventory: "
-        f"{inv['skills']} skills · {inv['agents']} agents · "
-        f"{inv['commands']} commands · {inv['plugins']} plugins · "
-        f"{inv['mcp_servers']} MCP servers · "
+        f"{inv['skills']} skills | {inv['agents']} agents | "
+        f"{inv['commands']} commands | {inv['plugins']} plugins | "
+        f"{inv['mcp_servers']} MCP servers | "
         f"{inv['projects_known']} known projects"
     )
     if report["composition"]:
@@ -235,3 +239,30 @@ def render_default(state: InstallationState) -> str:
         for w in report["warnings"]:
             lines.append(f"  ! {w}")
     return "\n".join(lines) + "\n"
+
+
+def render_rich(state: InstallationState, console: Console) -> None:
+    """Pretty TTY render: wordmark, hero, treemap, inventory."""
+    report = build_report(state)
+    baseline = report["baseline"]
+    inv = report["inventory"]
+
+    console.print(wordmark())
+    console.print("")
+    console.print(render_hero(baseline))
+    console.print("")
+    if report["composition"]:
+        console.print(render_treemap(report["composition"]))
+        console.print("")
+    console.print(
+        "[dim]"
+        f"{inv['skills']} skills · {inv['agents']} agents · "
+        f"{inv['commands']} commands · {inv['plugins']} plugins · "
+        f"{inv['mcp_servers']} MCP servers · "
+        f"{inv['projects_known']} known projects"
+        "[/dim]"
+    )
+    if report["warnings"]:
+        console.print("")
+        for warning in report["warnings"]:
+            console.print(f"[#eab308]![/#eab308] [dim]{warning}[/dim]")
