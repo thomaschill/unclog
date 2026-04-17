@@ -238,6 +238,19 @@ def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:
     ]
 
 
+def baseline_tokens(state: InstallationState) -> int:
+    """Compute the current baseline-token total for ``state``.
+
+    Used by the interactive flow to seed the post-apply countdown (spec
+    §11.8). Separate from :func:`build_report` to keep the countdown
+    path light — no findings detection needed.
+    """
+    counter = TiktokenCounter()
+    composition = build_composition(state, counter)
+    session = state.global_scope.latest_session
+    return int(_baseline(composition, session)["estimated_tokens"] or 0)
+
+
 def render_json(state: InstallationState) -> str:
     """Render the state as a single JSON document."""
     return json.dumps(build_report(state), indent=2, sort_keys=False)
@@ -305,14 +318,25 @@ def render_plain(state: InstallationState) -> str:
     return "\n".join(lines) + "\n"
 
 
-def render_rich(state: InstallationState, console: Console) -> None:
-    """Pretty TTY render: wordmark, hero, treemap, inventory."""
+def render_rich(
+    state: InstallationState,
+    console: Console,
+    *,
+    show_wordmark: bool = True,
+) -> None:
+    """Pretty TTY render: wordmark, hero, treemap, inventory.
+
+    Spec §11.4 suppresses the wordmark in ``--report``/``--json``/``--plain``.
+    The CLI resolves :class:`~unclog.ui.display.DisplayOptions` and passes
+    ``show_wordmark`` so this renderer stays ignorant of mode flags.
+    """
     report = build_report(state)
     baseline = report["baseline"]
     inv = report["inventory"]
 
-    console.print(wordmark())
-    console.print("")
+    if show_wordmark:
+        console.print(wordmark())
+        console.print("")
     console.print(render_hero(baseline))
     console.print("")
     if report["composition"]:

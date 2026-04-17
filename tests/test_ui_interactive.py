@@ -161,6 +161,41 @@ def test_interactive_yes_applies_only_auto_checked(tmp_path: Path) -> None:
     assert b_md.exists()
 
 
+def test_interactive_countdown_runs_when_baseline_provided(tmp_path: Path) -> None:
+    skill_md = tmp_path / "skills" / "g" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text("body\n", encoding="utf-8")
+    finding = Finding(
+        id="x",
+        type="unused_skill",
+        title="title",
+        reason="r",
+        scope=Scope(kind="global"),
+        action=Action(primitive="delete_file", path=skill_md),
+        auto_checked=False,
+        token_savings=500,
+    )
+    prompter = FakePrompter(
+        confirm_answers=[True, True],
+        multiselect_answer=[finding],
+    )
+    console = Console(record=True)
+    result = run_interactive(
+        [finding],
+        claude_home=tmp_path,
+        project_paths=(),
+        console=console,
+        options=InteractiveOptions(no_animation=True),
+        prompter=prompter,
+        baseline_tokens=42_000,
+    )
+    assert result is not None
+    output = console.export_text()
+    # Static (animate=False) countdown prints before -> after on one line.
+    assert "42,000" in output
+    assert "41,500" in output
+
+
 def test_interactive_yes_with_no_auto_checked_is_noop(tmp_path: Path) -> None:
     b_md = tmp_path / "skills" / "b" / "SKILL.md"
     b_md.parent.mkdir(parents=True)
