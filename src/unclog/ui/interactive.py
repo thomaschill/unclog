@@ -37,6 +37,7 @@ from rich.console import Console
 from unclog.apply.runner import ApplyResult, apply_findings
 from unclog.findings.base import Finding
 from unclog.ui.countdown import animate_countdown
+from unclog.ui.share import render_share_stat
 from unclog.util.paths import ClaudePaths
 
 
@@ -193,6 +194,11 @@ def _execute(
             before=baseline_tokens,
             after=baseline_tokens - result.token_savings,
             animate=animate,
+        )
+        render_share_stat(
+            console,
+            baseline_tokens=baseline_tokens,
+            tokens_saved=result.token_savings,
         )
     _maybe_warn_retention(paths, console)
     return result

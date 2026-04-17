@@ -659,4 +659,4 @@ Malformed config falls back to defaults with a one-line warning. Unknown keys ar
 | M4 — CLAUDE.md | section parser, dead_ref, duplicate, oversized, scope_mismatch detectors |
 | M5 — interactive | questionary selector, apply primitives, snapshot + manifest, restore |
 | M6 — polish | wordmark, custom spinner, countdown animation, --plain/--no-animation/--report, NO_COLOR |
-| M7 — ship | readme, privacy statement, PyPI release, `uv tool install unclog` verified on macOS + Linux |
+| M7 — ship | readme, privacy statement, shareable post-apply stat, PyPI release, `uv tool install unclog` verified on macOS + Linux |
