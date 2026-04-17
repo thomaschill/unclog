@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from unclog.scan.config import ClaudeConfig, Settings
-from unclog.scan.filesystem import Agent, Command, InstalledPlugin, Skill
+from unclog.scan.filesystem import Agent, Command, InstalledPlugin, PluginContent, Skill
 from unclog.scan.project import ProjectScope
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
@@ -54,6 +54,7 @@ class GlobalScope:
     agents: tuple[Agent, ...] = ()
     commands: tuple[Command, ...] = ()
     installed_plugins: tuple[InstalledPlugin, ...] = ()
+    plugin_content: tuple[PluginContent, ...] = ()
     latest_session: SessionSystemBlock | None = None
     activity: ActivityIndex = field(default_factory=ActivityIndex)
 

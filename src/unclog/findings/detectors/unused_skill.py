@@ -11,10 +11,11 @@ v0.1 therefore trades conservatism for transparency:
 2. Carry a ``token_savings`` estimate so the interactive picker can show
    the cost of each skill (name + description tokens, the bytes Claude
    loads on every session).
-3. Pre-check (``auto_checked=True``) only skills with zero ``@slug``
-   mentions in history — a weak but honest "I have never referenced
-   this by name" signal. Anything with even a single @mention is left
-   un-checked so the user has to opt in.
+3. Leave every skill *unchecked* by default. ``@slug`` mention absence
+   is a weak signal (skills can be invoked programmatically without any
+   mention), and pre-checking ~every skill made the picker arduous.
+   The user now explicitly opts in to each removal; bulk ``a``/``A``
+   keybinds in the picker handle the sweep case.
 
 We still cannot prove non-use (per-tool invocation counts require full
 session JSONL parsing — deferred to v0.2), so the evidence block is
@@ -51,11 +52,11 @@ def detect(
             skill.slug in activity.at_mention_last_used
             or skill.name in activity.at_mention_last_used
         )
-        auto_checked = not mentioned
+        auto_checked = False
         reason = (
             f"no @{skill.slug} mention in history"
             if not mentioned
-            else f"mentioned as @{skill.slug} in history — opt in to remove"
+            else f"mentioned as @{skill.slug} in history"
         )
         findings.append(
             Finding(

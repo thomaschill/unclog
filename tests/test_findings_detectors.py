@@ -136,13 +136,13 @@ def test_unused_skill_emits_one_finding_per_skill_even_without_activity(tmp_path
     findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
                 if f.type == "unused_skill"]
     assert {f.id for f in findings} == {"unused_skill:fashion", "unused_skill:pitch"}
-    # No @mention ever → pre-checked.
-    assert all(f.auto_checked for f in findings)
+    # v0.1: safer default — nothing pre-checked; user opts in via the picker.
+    assert not any(f.auto_checked for f in findings)
     # Every finding carries a concrete token-savings estimate for the UI.
     assert all(f.token_savings is not None and f.token_savings > 0 for f in findings)
 
 
-def test_unused_skill_auto_check_cleared_when_mentioned_in_history(tmp_path: Path) -> None:
+def test_unused_skill_records_mention_in_reason(tmp_path: Path) -> None:
     skill = _make_skill(tmp_path, "fashion")
     recent_mention = NOW - timedelta(days=10)
     activity = ActivityIndex(
@@ -153,9 +153,8 @@ def test_unused_skill_auto_check_cleared_when_mentioned_in_history(tmp_path: Pat
     findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
                 if f.type == "unused_skill"]
     assert len(findings) == 1
-    # Still emitted so the user can choose, but requires an explicit opt-in.
     assert findings[0].auto_checked is False
-    assert "opt in" in findings[0].reason.lower()
+    assert "mentioned" in findings[0].reason.lower()
 
 
 def test_unused_skill_emits_regardless_of_install_activity(tmp_path: Path) -> None:
@@ -192,7 +191,7 @@ def test_unused_agent_emits_one_finding_per_agent(tmp_path: Path) -> None:
     findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
                 if f.type == "unused_agent"]
     assert {f.id for f in findings} == {"unused_agent:planner", "unused_agent:reviewer"}
-    assert all(f.auto_checked for f in findings)
+    assert not any(f.auto_checked for f in findings)
     assert all(f.token_savings is not None for f in findings)
     assert all(f.action.primitive == "delete_file" for f in findings)
 
@@ -287,11 +286,23 @@ def test_stale_plugin_flags_old_enabled_plugin() -> None:
     assert stale[0].auto_checked is False
 
 
-def test_stale_plugin_ignores_recent_plugin() -> None:
+def test_stale_plugin_emits_even_for_recent_plugin() -> None:
+    # v0.1: age gate dropped. Every enabled plugin is a candidate so the
+    # user sees its token cost and can choose to disable.
     plugin = _plugin("fresh", None, (NOW - timedelta(days=10)).isoformat().replace("+00:00", "Z"))
     settings = Settings(enabled_plugins=MappingProxyType({"fresh": True}))
     state = _state(plugins=(plugin,), settings=settings, activity=_active_index())
     findings = detect(state, state.global_scope.activity, Thresholds(stale_plugin_days=90), now=NOW)
+    stale = [f for f in findings if f.type == "stale_plugin"]
+    assert len(stale) == 1
+    assert stale[0].auto_checked is False
+
+
+def test_stale_plugin_skips_disabled_plugins() -> None:
+    plugin = _plugin("off", None, "2025-01-01T00:00:00Z")
+    settings = Settings(enabled_plugins=MappingProxyType({"off": False}))
+    state = _state(plugins=(plugin,), settings=settings, activity=_active_index())
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "stale_plugin"] == []
 
 

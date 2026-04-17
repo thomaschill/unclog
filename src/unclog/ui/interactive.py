@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from pick import Picker
+from pick import KEYS_DOWN, KEYS_ENTER, KEYS_SELECT, KEYS_UP, Picker
 from rich.console import Console
 
 from unclog.apply.runner import ApplyResult, apply_findings
@@ -49,6 +49,49 @@ class Prompter(Protocol):
     def multiselect(
         self, message: str, choices: list[tuple[str, Finding]], defaults: set[str]
     ) -> list[Finding]: ...
+
+
+class _BulkKeyPicker(Picker):  # type: ignore[misc]
+    """``pick.Picker`` with bulk-select keybinds.
+
+    ``pick`` doesn't expose a hook for custom keys, so we override
+    ``run_loop`` — the only method that reads keypresses — and add:
+
+    - ``a`` — toggle all (checked ↔ unchecked inverted across the list)
+    - ``n`` — uncheck everything
+    - ``A`` — check everything
+
+    Everything else is delegated back to the parent implementation.
+    """
+
+    def run_loop(self, screen, position):  # type: ignore[no-untyped-def]
+        while True:
+            self.draw(screen)
+            c = screen.getch()
+            if self.quit_keys is not None and c in self.quit_keys:
+                return [] if self.multiselect else (None, -1)
+            if c in KEYS_UP:
+                self.move_up()
+            elif c in KEYS_DOWN:
+                self.move_down()
+            elif c in KEYS_ENTER:
+                if (
+                    self.multiselect
+                    and len(self.selected_indexes) < self.min_selection_count
+                ):
+                    continue
+                return self.get_selected()
+            elif c in KEYS_SELECT and self.multiselect:
+                self.mark_index()
+            elif self.multiselect and c == ord("a"):
+                current = set(self.selected_indexes)
+                self.selected_indexes = [
+                    i for i in range(len(self.options)) if i not in current
+                ]
+            elif self.multiselect and c == ord("A"):
+                self.selected_indexes = list(range(len(self.options)))
+            elif self.multiselect and c == ord("n"):
+                self.selected_indexes = []
 
 
 class PickPrompter:
@@ -80,11 +123,12 @@ class PickPrompter:
         titles = [title for title, _ in choices]
         findings = [finding for _, finding in choices]
         preselected = [i for i, title in enumerate(titles) if title in defaults]
-        picker = Picker(
+        picker = _BulkKeyPicker(
             options=titles,
             title=(
                 f"{message}\n"
-                "↑/↓ move · space toggle · enter submit · q quit"
+                "↑/↓ move · space toggle · a invert · A all · n none · "
+                "enter submit · q quit"
             ),
             multiselect=True,
             min_selection_count=0,
@@ -168,13 +212,6 @@ def run_interactive(
     sorted_applicable = sorted(
         applicable,
         key=lambda f: (f.token_savings is None, -(f.token_savings or 0), f.title),
-    )
-    console.print("")
-    console.print(
-        "[dim]Signal note: v0.1 only sees [/dim][bold]@mentions[/bold]"
-        "[dim] in history. Agents invoked via the Task tool or by other "
-        "agents leave no trace and will appear pre-checked even if active. "
-        "Review before confirming.[/dim]"
     )
     choices = [(_format_choice(f), f) for f in sorted_applicable]
     defaults = {title for title, f in choices if f.auto_checked}

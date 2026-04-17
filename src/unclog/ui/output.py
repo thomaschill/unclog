@@ -117,6 +117,29 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
             }
         )
 
+    for content in gs.plugin_content:
+        if not content.skills and not content.agents:
+            continue
+        plugin_tokens = sum(
+            counter.count(f"{s.name}: {s.description or ''}") for s in content.skills
+        ) + sum(
+            counter.count(f"{a.name}: {a.description or ''}") for a in content.agents
+        )
+        plugin_bytes = sum(s.frontmatter_bytes for s in content.skills) + sum(
+            a.frontmatter_bytes for a in content.agents
+        )
+        breakdown = f"n_skills={len(content.skills)}, n_agents={len(content.agents)}"
+        entries.append(
+            {
+                "source": f"plugin:{content.plugin_key}:bundled ({breakdown})",
+                "scope": "global",
+                "bytes": plugin_bytes,
+                "tokens": plugin_tokens,
+                "tokens_source": "tiktoken",
+                "note": "bundled by plugin; disable plugin in settings.json to skip",
+            }
+        )
+
     mcp_servers = gs.config.mcp_servers if gs.config else {}
     session = gs.latest_session
     attribution = _mcp_attribution(session, counter) if session else {}
@@ -449,6 +472,7 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
         console.print("")
         console.print(
             "[dim]→ Opening picker. [/dim][bold]↑/↓[/bold][dim] move · [/dim]"
-            "[bold]space[/bold][dim] toggle · [/dim][bold]enter[/bold]"
-            "[dim] submit · [/dim][bold]q[/bold][dim] quit.[/dim]"
+            "[bold]space[/bold][dim] toggle · [/dim][bold]a[/bold][dim] invert · [/dim]"
+            "[bold]A[/bold][dim] all · [/dim][bold]n[/bold][dim] none · [/dim]"
+            "[bold]enter[/bold][dim] submit · [/dim][bold]q[/bold][dim] quit.[/dim]"
         )

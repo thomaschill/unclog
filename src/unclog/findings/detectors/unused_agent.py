@@ -34,11 +34,15 @@ def detect(
             agent.slug in activity.at_mention_last_used
             or agent.name in activity.at_mention_last_used
         )
-        auto_checked = not mentioned
+        # Default: unchecked. @mention is a weak negative signal (Task-tool
+        # invocations leave no trace), and when most users have 100+ agents
+        # installed that were never mentioned, pre-checking everything makes
+        # the picker arduous. Safer to opt in than opt out.
+        auto_checked = False
         reason = (
             f"no @{agent.slug} mention in history"
             if not mentioned
-            else f"mentioned as @{agent.slug} in history — opt in to remove"
+            else f"mentioned as @{agent.slug} in history"
         )
         findings.append(
             Finding(

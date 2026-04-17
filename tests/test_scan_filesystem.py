@@ -6,6 +6,7 @@ from pathlib import Path
 from unclog.scan.filesystem import (
     enumerate_agents,
     enumerate_commands,
+    enumerate_plugin_content,
     enumerate_skills,
     load_installed_plugins,
 )
@@ -222,3 +223,44 @@ def test_load_installed_plugins_accepts_dict_of_name_to_entry(tmp_path: Path) ->
     plugins = load_installed_plugins(path)
     names = sorted(p.name for p in plugins)
     assert names == ["bar", "foo"]
+
+
+def test_enumerate_plugin_content_returns_none_for_missing_path(tmp_path: Path) -> None:
+    assert enumerate_plugin_content("missing@mp", tmp_path / "nope") is None
+
+
+def test_enumerate_plugin_content_reads_only_claude_subtree(tmp_path: Path) -> None:
+    # Layout: a realistic plugin cache dir that ships skills for multiple
+    # AI clients. Only the .claude/ subtree should be counted.
+    install = tmp_path / "plugin-install"
+    install.mkdir()
+    # Claude-scoped skill — should be enumerated.
+    (install / ".claude" / "skills" / "focus").mkdir(parents=True)
+    (install / ".claude" / "skills" / "focus" / "SKILL.md").write_text(
+        "---\nname: focus\ndescription: be precise\n---\nbody\n", encoding="utf-8"
+    )
+    # Cursor-scoped duplicate — must be ignored to avoid double counting.
+    (install / ".cursor" / "skills" / "focus").mkdir(parents=True)
+    (install / ".cursor" / "skills" / "focus" / "SKILL.md").write_text(
+        "---\nname: focus\ndescription: be precise\n---\nbody\n", encoding="utf-8"
+    )
+    # Claude-scoped agent.
+    (install / ".claude" / "agents").mkdir(parents=True)
+    (install / ".claude" / "agents" / "reviewer.md").write_text(
+        "---\nname: reviewer\ndescription: reviews code\n---\n", encoding="utf-8"
+    )
+
+    content = enumerate_plugin_content("acme@mp", install)
+    assert content is not None
+    assert content.plugin_key == "acme@mp"
+    assert [s.slug for s in content.skills] == ["focus"]
+    assert [a.slug for a in content.agents] == ["reviewer"]
+
+
+def test_enumerate_plugin_content_handles_plugin_with_no_claude_dir(tmp_path: Path) -> None:
+    install = tmp_path / "empty-plugin"
+    install.mkdir()
+    content = enumerate_plugin_content("empty@mp", install)
+    assert content is not None
+    assert content.skills == ()
+    assert content.agents == ()

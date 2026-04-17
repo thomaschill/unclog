@@ -11,10 +11,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
-from unclog.scan.config import ConfigParseError, load_claude_config, load_settings
+from unclog.scan.config import ConfigParseError, Settings, load_claude_config, load_settings
 from unclog.scan.filesystem import (
+    InstalledPlugin,
+    PluginContent,
     enumerate_agents,
     enumerate_commands,
+    enumerate_plugin_content,
     enumerate_skills,
     load_installed_plugins,
 )
@@ -74,6 +77,35 @@ def _noop_phase(_: str) -> None:
     return None
 
 
+def _plugin_key(plugin_name: str, marketplace: str | None) -> str:
+    """Mirror settings.json's ``enabledPlugins`` key format."""
+    return f"{plugin_name}@{marketplace}" if marketplace else plugin_name
+
+
+def _enumerate_enabled_plugin_content(
+    plugins: tuple[InstalledPlugin, ...],
+    settings: Settings | None,
+) -> tuple[PluginContent, ...]:
+    """Scan every currently-enabled plugin's bundled skills + agents.
+
+    Disabled plugins are skipped — their content isn't loaded into the
+    context so counting it would inflate the baseline. ``stale_plugin``
+    will still surface the enabled ones with their aggregated token cost.
+    """
+    enabled_map = settings.enabled_plugins if settings is not None else {}
+    out: list[PluginContent] = []
+    for plugin in plugins:
+        key = _plugin_key(plugin.name, plugin.marketplace)
+        if not enabled_map.get(key, False):
+            continue
+        if plugin.install_path is None:
+            continue
+        content = enumerate_plugin_content(key, plugin.install_path)
+        if content is not None:
+            out.append(content)
+    return tuple(out)
+
+
 def scan_global(
     paths: ClaudePaths,
     warnings: list[str],
@@ -104,6 +136,7 @@ def scan_global(
     agents = enumerate_agents(paths.agents_dir)
     commands = enumerate_commands(paths.commands_dir)
     plugins = load_installed_plugins(paths.installed_plugins_json)
+    plugin_content = _enumerate_enabled_plugin_content(plugins, settings)
 
     on_phase("Parsing last session per project…")
     latest_session = _find_latest_session_across_projects(paths.projects_dir, counter)
@@ -123,6 +156,7 @@ def scan_global(
         agents=agents,
         commands=commands,
         installed_plugins=plugins,
+        plugin_content=plugin_content,
         latest_session=latest_session,
         activity=activity,
     )
