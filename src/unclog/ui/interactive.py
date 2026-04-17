@@ -109,7 +109,7 @@ def run_interactive(
 
     applicable = [f for f in findings if f.action.primitive != "flag_only"]
     if not applicable:
-        console.print("[dim]All findings are informational — nothing to apply.[/dim]")
+        _render_informational_next_steps(findings, console)
         return None
 
     if options.yes:
@@ -221,6 +221,58 @@ def _render_result(result: ApplyResult, console: Console) -> None:
             console.print(f"  [dim]- {finding.title}: {reason}[/dim]")
     console.print("")
     console.print(f"[dim]Undo:  unclog restore {result.snapshot.id}[/dim]")
+
+
+def _render_informational_next_steps(
+    findings: list[Finding], console: Console
+) -> None:
+    """Print a manual-remediation hint block when nothing is auto-applicable.
+
+    Flag-only findings are surfaced by detectors that can identify a
+    problem but intentionally decline to fix it automatically (missing
+    ``.claudeignore``, recently-disabled plugin residue, etc. — spec §6).
+    Rather than exiting silently, we give the user a concrete next step
+    per finding type so they know what to do.
+    """
+    console.print("")
+    console.print(
+        f"[bold]No auto-fixable issues.[/bold] "
+        f"[dim]{len(findings)} informational finding(s) — handle manually:[/dim]"
+    )
+    seen_hints: set[str] = set()
+    for f in findings:
+        hint = _manual_hint_for(f)
+        key = f"{f.type}:{hint}"
+        if key in seen_hints:
+            continue
+        seen_hints.add(key)
+        console.print(f"  [dim]·[/dim] {f.title}  [dim]→ {hint}[/dim]")
+    console.print("")
+    console.print(
+        "[dim]Run [/dim][bold]unclog --json[/bold][dim] for full evidence "
+        "on each finding.[/dim]"
+    )
+
+
+def _manual_hint_for(finding: Finding) -> str:
+    """Human next-step for a flag-only finding."""
+    path = finding.action.path
+    plugin_key = finding.action.plugin_key
+    match finding.type:
+        case "missing_claudeignore":
+            target = str(path) if path else ".claudeignore"
+            return f"create {target} with node_modules/ .venv/ etc."
+        case "disabled_plugin_residue":
+            key = plugin_key or finding.id.split(":", 1)[-1]
+            return (
+                f"leave in place; unclog will offer removal once "
+                f"{key!r} is long-disabled"
+            )
+        case "claude_md_dead_ref":
+            target = str(path) if path else "the referenced CLAUDE.md"
+            return f"review and rewrite surrounding prose in {target}"
+        case _:
+            return "see --json output for evidence"
 
 
 _RETENTION_WARN_THRESHOLD = 20

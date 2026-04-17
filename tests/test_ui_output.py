@@ -8,7 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from unclog.cli import app
-from unclog.scan.config import ClaudeConfig, McpServer, Settings
+from unclog.scan.config import ClaudeConfig, McpServer, ProjectRecord, Settings
 from unclog.scan.filesystem import Agent, Skill
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
@@ -226,6 +226,45 @@ def test_build_report_emits_dead_mcp_finding_as_json() -> None:
     assert notion_finding["auto_checked"] is False
     assert notion_finding["action"]["primitive"] == "comment_out_mcp"
     assert notion_finding["action"]["server_name"] == "notion"
+
+
+def test_inventory_counts_project_scoped_mcp_servers() -> None:
+    config = ClaudeConfig(
+        mcp_servers={},
+        projects={
+            Path("/tmp/a"): ProjectRecord(
+                path=Path("/tmp/a"),
+                mcp_servers={"sse-server": McpServer(name="sse-server")},
+            ),
+            Path("/tmp/b"): ProjectRecord(
+                path=Path("/tmp/b"),
+                mcp_servers={
+                    "polymarket-docs": McpServer(name="polymarket-docs"),
+                    "Roblox_Studio": McpServer(name="Roblox_Studio"),
+                },
+            ),
+        },
+    )
+    state = _make_state(config=config)
+    report = build_report(state)
+    assert report["inventory"]["mcp_servers"] == 3
+    assert report["inventory"]["mcp_servers_project"] == 3
+    assert report["inventory"]["mcp_servers_global"] == 0
+
+
+def test_render_plain_surfaces_project_scoped_mcp_label() -> None:
+    config = ClaudeConfig(
+        mcp_servers={"notion": McpServer(name="notion")},
+        projects={
+            Path("/tmp/a"): ProjectRecord(
+                path=Path("/tmp/a"),
+                mcp_servers={"sse-server": McpServer(name="sse-server")},
+            ),
+        },
+    )
+    state = _make_state(config=config)
+    out = render_plain(state)
+    assert "2 MCP servers (1 project-scoped)" in out
 
 
 def test_render_plain_lists_findings_with_selection_markers() -> None:

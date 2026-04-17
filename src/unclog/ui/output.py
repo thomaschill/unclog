@@ -145,14 +145,40 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
     return entries
 
 
+def _mcp_label(inv: dict[str, Any]) -> str:
+    """Render the MCP-server count with project-scope breakdown when relevant.
+
+    Project-scoped MCPs live in ``~/.claude.json``'s per-project sections
+    and only load when that project is open. Surfacing them separately
+    prevents the "0 MCP servers" confusion for users whose entire MCP
+    footprint is project-scoped.
+    """
+    total = inv["mcp_servers"]
+    project_scoped = inv.get("mcp_servers_project", 0)
+    if total == 0:
+        return "0 MCP servers"
+    if project_scoped and project_scoped == total:
+        return f"{total} MCP servers (project-scoped)"
+    if project_scoped:
+        return f"{total} MCP servers ({project_scoped} project-scoped)"
+    return f"{total} MCP servers"
+
+
 def _inventory(state: InstallationState) -> dict[str, int]:
     gs = state.global_scope
+    global_mcp = len(gs.config.mcp_servers) if gs.config else 0
+    project_mcp = 0
+    if gs.config:
+        for project in gs.config.projects.values():
+            project_mcp += len(project.mcp_servers)
     return {
         "skills": len(gs.skills),
         "agents": len(gs.agents),
         "commands": len(gs.commands),
         "plugins": len(gs.installed_plugins),
-        "mcp_servers": len(gs.config.mcp_servers) if gs.config else 0,
+        "mcp_servers": global_mcp + project_mcp,
+        "mcp_servers_global": global_mcp,
+        "mcp_servers_project": project_mcp,
         "projects_known": len(gs.config.projects) if gs.config else 0,
     }
 
@@ -279,7 +305,7 @@ def render_plain(state: InstallationState) -> str:
         "inventory: "
         f"{inv['skills']} skills | {inv['agents']} agents | "
         f"{inv['commands']} commands | {inv['plugins']} plugins | "
-        f"{inv['mcp_servers']} MCP servers | "
+        f"{_mcp_label(inv)} | "
         f"{inv['projects_known']} known projects"
     )
     if report["projects_audited"]:
@@ -299,12 +325,28 @@ def render_plain(state: InstallationState) -> str:
     if report["findings"]:
         lines.append("")
         auto = sum(1 for f in report["findings"] if f.get("auto_checked"))
+        info = sum(
+            1
+            for f in report["findings"]
+            if f.get("action", {}).get("primitive") == "flag_only"
+        )
+        opt_in = len(report["findings"]) - auto - info
+        parts = [f"{auto} auto-fix"]
+        if opt_in:
+            parts.append(f"{opt_in} opt-in")
+        if info:
+            parts.append(f"{info} informational")
         lines.append(
-            f"findings: {len(report['findings'])} "
-            f"({auto} auto-checked, {len(report['findings']) - auto} opt-in)"
+            f"findings: {len(report['findings'])} ({', '.join(parts)})"
         )
         for f in report["findings"]:
-            marker = "[x]" if f.get("auto_checked") else "[ ]"
+            primitive = f.get("action", {}).get("primitive")
+            if f.get("auto_checked"):
+                marker = "[x]"
+            elif primitive == "flag_only":
+                marker = "[i]"
+            else:
+                marker = "[ ]"
             scope = f["scope"].get("kind", "global")
             lines.append(f"  {marker} [{scope:>7}] {f['title']} - {f['reason']}")
     else:
@@ -346,7 +388,7 @@ def render_rich(
         "[dim]"
         f"{inv['skills']} skills · {inv['agents']} agents · "
         f"{inv['commands']} commands · {inv['plugins']} plugins · "
-        f"{inv['mcp_servers']} MCP servers · "
+        f"{_mcp_label(inv)} · "
         f"{inv['projects_known']} known projects"
         "[/dim]"
     )
@@ -364,13 +406,25 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
         console.print("[dim]findings: none — nothing to clean up right now[/dim]")
         return
     auto = sum(1 for f in findings if f.get("auto_checked"))
-    opt_in = len(findings) - auto
+    info = sum(1 for f in findings if f.get("action", {}).get("primitive") == "flag_only")
+    opt_in = len(findings) - auto - info
+    parts = [f"{auto} auto-fix"]
+    if opt_in:
+        parts.append(f"{opt_in} opt-in")
+    if info:
+        parts.append(f"{info} informational")
     console.print(
         f"[bold]Found {len(findings)} issue(s).[/bold] "
-        f"[dim]{auto} auto-checked, {opt_in} opt-in.[/dim]"
+        f"[dim]{', '.join(parts)}.[/dim]"
     )
     for f in findings:
-        marker = "[#22c55e][x][/#22c55e]" if f.get("auto_checked") else "[dim][ ][/dim]"
+        primitive = f.get("action", {}).get("primitive")
+        if f.get("auto_checked"):
+            marker = "[#22c55e][x][/#22c55e]"
+        elif primitive == "flag_only":
+            marker = "[dim][i][/dim]"
+        else:
+            marker = "[dim][ ][/dim]"
         scope_kind = f["scope"].get("kind", "global")
         scope_label = f"[dim][{scope_kind:>7}][/dim]"
         console.print(f" {marker} {scope_label} {f['title']}  [dim]· {f['reason']}[/dim]")

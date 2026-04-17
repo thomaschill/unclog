@@ -196,6 +196,47 @@ def test_interactive_countdown_runs_when_baseline_provided(tmp_path: Path) -> No
     assert "41,500" in output
 
 
+def _flag_only(fid: str, ftype: str, **extra: object) -> Finding:
+    return Finding(
+        id=fid,
+        type=ftype,  # type: ignore[arg-type]
+        title=f"title {fid}",
+        reason="r",
+        scope=Scope(kind="global"),
+        action=Action(primitive="flag_only", **extra),  # type: ignore[arg-type]
+        auto_checked=False,
+        evidence=MappingProxyType({}),
+    )
+
+
+def test_interactive_flag_only_findings_render_next_step_hints(tmp_path: Path) -> None:
+    console = Console(record=True, width=120)
+    prompter = FakePrompter()
+    findings = [
+        _flag_only("missing_claudeignore:/tmp/a", "missing_claudeignore",
+                   path=tmp_path / "a" / ".claudeignore"),
+        _flag_only("disabled_plugin_residue:foo@mp", "disabled_plugin_residue",
+                   plugin_key="foo@mp"),
+    ]
+    result = run_interactive(
+        findings,
+        claude_home=tmp_path,
+        project_paths=(),
+        console=console,
+        options=InteractiveOptions(),
+        prompter=prompter,
+    )
+    assert result is None
+    # No Y/N prompts — nothing to apply, so the flow exits before the
+    # "Fix these?" confirm would fire.
+    assert prompter.confirm_calls == []
+    output = console.export_text()
+    assert "No auto-fixable issues" in output
+    # Each finding type gets a concrete manual-remediation hint.
+    assert "create" in output  # missing_claudeignore hint
+    assert "leave in place" in output  # disabled_plugin_residue hint
+
+
 def test_interactive_yes_with_no_auto_checked_is_noop(tmp_path: Path) -> None:
     b_md = tmp_path / "skills" / "b" / "SKILL.md"
     b_md.parent.mkdir(parents=True)
