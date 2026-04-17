@@ -36,6 +36,7 @@ from rich.console import Console
 
 from unclog.apply.runner import ApplyResult, apply_findings
 from unclog.findings.base import Finding
+from unclog.ui.countdown import animate_countdown
 from unclog.util.paths import ClaudePaths
 
 
@@ -94,6 +95,7 @@ def run_interactive(
     console: Console,
     options: InteractiveOptions,
     prompter: Prompter | None = None,
+    baseline_tokens: int | None = None,
 ) -> ApplyResult | None:
     """Run the interactive fix flow. Returns the apply result, or None.
 
@@ -120,6 +122,8 @@ def run_interactive(
             project_paths=project_paths,
             console=console,
             dry_run=options.dry_run,
+            animate=not options.no_animation,
+            baseline_tokens=baseline_tokens,
         )
 
     if prompter is None:
@@ -154,6 +158,8 @@ def run_interactive(
         project_paths=project_paths,
         console=console,
         dry_run=options.dry_run,
+        animate=not options.no_animation,
+        baseline_tokens=baseline_tokens,
     )
 
 
@@ -164,6 +170,8 @@ def _execute(
     project_paths: tuple[Path, ...],
     console: Console,
     dry_run: bool,
+    animate: bool,
+    baseline_tokens: int | None,
 ) -> ApplyResult | None:
     if dry_run:
         console.print(f"[dim]--dry-run: would apply {len(findings)} change(s).[/dim]")
@@ -178,6 +186,14 @@ def _execute(
         project_paths=project_paths,
     )
     _render_result(result, console)
+    if baseline_tokens is not None and result.token_savings:
+        console.print("")
+        animate_countdown(
+            console,
+            before=baseline_tokens,
+            after=baseline_tokens - result.token_savings,
+            animate=animate,
+        )
     _maybe_warn_retention(paths, console)
     return result
 

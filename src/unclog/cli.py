@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import sys
 from pathlib import Path
 
 import typer
@@ -12,8 +10,10 @@ from unclog.app import run_scan
 from unclog.apply.restore import restore_snapshot
 from unclog.apply.snapshot import SnapshotError, list_snapshots, load_snapshot
 from unclog.state import InstallationState
+from unclog.ui.display import DisplayOptions
 from unclog.ui.interactive import InteractiveOptions, run_interactive
-from unclog.ui.output import render_json, render_plain, render_rich
+from unclog.ui.output import baseline_tokens, render_json, render_plain, render_rich
+from unclog.ui.spinner import scan_spinner
 from unclog.util.paths import claude_paths
 
 app = typer.Typer(
@@ -28,20 +28,6 @@ def _version_callback(value: bool) -> None:
     if value:
         typer.echo(f"unclog {__version__}")
         raise typer.Exit()
-
-
-def _should_go_plain(plain_flag: bool) -> bool:
-    """Decide whether to route output through the plain renderer.
-
-    Respects ``--plain``, the ``NO_COLOR`` convention, and auto-downgrades
-    when stdout isn't a TTY (piped into a file, CI logs, etc.) per
-    spec §11.9.
-    """
-    if plain_flag:
-        return True
-    if os.environ.get("NO_COLOR"):
-        return True
-    return not sys.stdout.isatty()
 
 
 @app.callback(invoke_without_command=True)
@@ -97,7 +83,7 @@ def root(
     no_animation: bool = typer.Option(
         False,
         "--no-animation",
-        help="Disable motion (spinners, countdowns). Kept for M6; currently a no-op.",
+        help="Disable motion (scan spinner, post-apply countdown); keeps colour.",
     ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
@@ -117,24 +103,40 @@ def root(
     if report_only and (dry_run or yes):
         raise typer.BadParameter("--report cannot be combined with --dry-run or --yes")
 
-    state = run_scan(project=project, all_projects=all_projects)
+    display = DisplayOptions.resolve(
+        as_json=as_json,
+        plain_flag=plain,
+        report_only=report_only,
+        no_animation_flag=no_animation,
+    )
+
+    console = Console(no_color=not display.colour)
+
+    if display.plain:
+        state = run_scan(project=project, all_projects=all_projects)
+    else:
+        with scan_spinner(console, animate=display.animate) as phase:
+            state = run_scan(
+                project=project,
+                all_projects=all_projects,
+                on_phase=phase,
+            )
 
     if as_json:
         typer.echo(render_json(state))
         return
 
-    plain_mode = _should_go_plain(plain)
-    if plain_mode:
+    if display.plain:
         typer.echo(render_plain(state), nl=False)
     else:
-        console = Console()
-        render_rich(state, console)
+        render_rich(state, console, show_wordmark=display.show_wordmark)
 
-    if report_only or as_json or plain_mode:
+    if report_only or as_json or display.plain:
         return
 
     _launch_interactive(
         state,
+        console=console,
         dry_run=dry_run,
         yes=yes,
         no_animation=no_animation,
@@ -144,6 +146,7 @@ def root(
 def _launch_interactive(
     state: InstallationState,
     *,
+    console: Console,
     dry_run: bool,
     yes: bool,
     no_animation: bool,
@@ -162,7 +165,6 @@ def _launch_interactive(
     if not findings:
         return
     project_paths = tuple(p.path for p in state.project_scopes if p.exists)
-    console = Console()
     run_interactive(
         findings,
         claude_home=state.claude_home,
@@ -173,6 +175,7 @@ def _launch_interactive(
             yes=yes,
             no_animation=no_animation,
         ),
+        baseline_tokens=baseline_tokens(state),
     )
 
 
