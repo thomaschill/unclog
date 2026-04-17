@@ -1,0 +1,92 @@
+[project]
+name = "unclog"
+version = "0.1.0.dev0"
+description = "Audit your Claude Code installation and clear context-window bloat. Local-only."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "Tom Hill" }]
+keywords = ["claude", "claude-code", "cli", "audit", "context", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "questionary>=2.0",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+accurate = ["anthropic>=0.40"]
+dev = [
+    "pytest>=8.0",
+    "pytest-snapshot>=0.9",
+    "ruff>=0.6",
+    "mypy>=1.11",
+]
+
+[project.scripts]
+unclog = "unclog.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/thomaschill/unclog"
+Repository = "https://github.com/thomaschill/unclog"
+Issues = "https://github.com/thomaschill/unclog/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/unclog"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",  # line length handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B018"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/unclog"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["questionary.*", "tiktoken.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
