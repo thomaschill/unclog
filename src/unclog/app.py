@@ -17,6 +17,7 @@ from unclog.scan.filesystem import (
     enumerate_skills,
     load_installed_plugins,
 )
+from unclog.scan.project import ProjectScope, resolve_project_paths, scan_project
 from unclog.scan.session import (
     SessionSystemBlock,
     latest_session_path,
@@ -100,16 +101,63 @@ def scan_global(paths: ClaudePaths, warnings: list[str]) -> GlobalScope:
     )
 
 
-def run_scan() -> InstallationState:
+def _scan_projects(
+    paths: Path,
+    scope: GlobalScope,
+    *,
+    project: Path | None,
+    all_projects: bool,
+    cwd: Path,
+    warnings: list[str],
+) -> tuple[ProjectScope, ...]:
+    """Resolve and scan the projects requested by the CLI flags.
+
+    Stale ``~/.claude.json`` entries (project paths that no longer
+    exist on disk) are included with ``exists=False`` under
+    ``--all-projects`` so they can be reported; elsewhere they are
+    simply scanned and left to detectors to ignore.
+    """
+    known = tuple(scope.config.projects) if scope.config else ()
+    targets = resolve_project_paths(
+        explicit_project=project,
+        all_projects=all_projects,
+        cwd=cwd,
+        known_projects=known,
+    )
+    scopes: list[ProjectScope] = []
+    for target in targets:
+        scoped = scan_project(target)
+        if not scoped.exists and all_projects:
+            warnings.append(f"Project path no longer exists: {target}")
+        scopes.append(scoped)
+    return tuple(scopes)
+
+
+def run_scan(
+    *,
+    project: Path | None = None,
+    all_projects: bool = False,
+    cwd: Path | None = None,
+) -> InstallationState:
     """Run a full scan using the environment's Claude home."""
     paths = claude_paths()
     warnings: list[str] = []
     if not paths.home.exists():
         warnings.append(f"Claude Code home does not exist: {paths.home}")
     scope = scan_global(paths, warnings)
+    cwd_resolved = cwd if cwd is not None else Path.cwd()
+    project_scopes = _scan_projects(
+        paths.home,
+        scope,
+        project=project,
+        all_projects=all_projects,
+        cwd=cwd_resolved,
+        warnings=warnings,
+    )
     return InstallationState(
         generated_at=datetime.now(tz=UTC),
         claude_home=paths.home,
         global_scope=scope,
+        project_scopes=project_scopes,
         warnings=tuple(warnings),
     )

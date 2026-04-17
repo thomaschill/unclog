@@ -166,6 +166,16 @@ def test_cli_non_tty_falls_back_to_plain(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert "unclog" in result.stdout
 
 
+def test_cli_project_and_all_projects_are_mutually_exclusive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    project = tmp_path / "proj"
+    project.mkdir()
+    result = runner.invoke(app, ["--project", str(project), "--all-projects"])
+    assert result.exit_code != 0
+
+
 def test_cli_json_flag_emits_valid_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     result = runner.invoke(app, ["--json"])

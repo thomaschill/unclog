@@ -74,6 +74,10 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B018"]
 
+[tool.ruff.lint.flake8-bugbear]
+# Typer-idiomatic: option/argument defaults live in the signature.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
