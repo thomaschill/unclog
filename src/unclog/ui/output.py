@@ -213,8 +213,29 @@ def build_report(state: InstallationState) -> dict[str, Any]:
         "composition": composition,
         "findings": [f.to_json() for f in findings],
         "warnings": list(state.warnings),
-        "projects_audited": [],
+        "projects_audited": _projects_audited(state),
     }
+
+
+def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:
+    """Summarise the project scopes the scan actually read.
+
+    Used by the JSON schema and the rich/plain renderers so users see
+    which CLAUDE.md files the cross-scope detectors had access to —
+    the difference between "no findings because nothing's wrong" and
+    "no findings because we didn't scan any projects".
+    """
+    return [
+        {
+            "path": str(project.path),
+            "name": project.name,
+            "exists": project.exists,
+            "claude_md_bytes": project.claude_md_bytes,
+            "claude_local_md_bytes": project.claude_local_md_bytes,
+            "has_claudeignore": project.has_claudeignore,
+        }
+        for project in state.project_scopes
+    ]
 
 
 def render_json(state: InstallationState) -> str:
@@ -248,6 +269,13 @@ def render_plain(state: InstallationState) -> str:
         f"{inv['mcp_servers']} MCP servers | "
         f"{inv['projects_known']} known projects"
     )
+    if report["projects_audited"]:
+        lines.append("")
+        lines.append("projects audited:")
+        for project in report["projects_audited"]:
+            missing = " (missing)" if not project["exists"] else ""
+            ci = " .claudeignore" if project["has_claudeignore"] else ""
+            lines.append(f"  - {project['name']}{missing}{ci}  {project['path']}")
     if report["composition"]:
         lines.append("")
         lines.append("composition (largest first):")

@@ -166,6 +166,32 @@ def test_cli_non_tty_falls_back_to_plain(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert "unclog" in result.stdout
 
 
+def test_build_report_includes_projects_audited(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Use a real run_scan with --project so project_scopes populate.
+    from unclog.app import run_scan
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text("# p\nbody\n", encoding="utf-8")
+    state = run_scan(project=project, all_projects=False, cwd=tmp_path)
+    report = build_report(state)
+    audited = report["projects_audited"]
+    assert len(audited) == 1
+    assert audited[0]["path"] == str(project.resolve())
+    assert audited[0]["exists"] is True
+
+
+def test_cli_project_and_all_projects_are_mutually_exclusive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    project = tmp_path / "proj"
+    project.mkdir()
+    result = runner.invoke(app, ["--project", str(project), "--all-projects"])
+    assert result.exit_code != 0
+
+
 def test_cli_json_flag_emits_valid_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     result = runner.invoke(app, ["--json"])

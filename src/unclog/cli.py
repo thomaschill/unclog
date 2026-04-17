@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -59,6 +60,19 @@ def root(
         "--plain",
         help="ASCII-only, colour-free output (auto when piped or NO_COLOR is set).",
     ),
+    project: Path | None = typer.Option(
+        None,
+        "--project",
+        help="Audit exactly this project path in addition to the global scope.",
+        dir_okay=True,
+        file_okay=False,
+        resolve_path=False,
+    ),
+    all_projects: bool = typer.Option(
+        False,
+        "--all-projects",
+        help="Audit every project listed in ~/.claude.json alongside global.",
+    ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
 
@@ -69,7 +83,9 @@ def root(
     """
     if ctx.invoked_subcommand is not None:
         return
-    state = run_scan()
+    if project is not None and all_projects:
+        raise typer.BadParameter("--project and --all-projects are mutually exclusive")
+    state = run_scan(project=project, all_projects=all_projects)
     if as_json:
         typer.echo(render_json(state))
         return

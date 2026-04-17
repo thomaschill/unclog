@@ -14,6 +14,7 @@ from typing import Literal
 
 from unclog.scan.config import ClaudeConfig, Settings
 from unclog.scan.filesystem import Agent, Command, InstalledPlugin, Skill
+from unclog.scan.project import ProjectScope
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
 
@@ -64,4 +65,5 @@ class InstallationState:
     generated_at: datetime
     claude_home: Path
     global_scope: GlobalScope
+    project_scopes: tuple[ProjectScope, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
