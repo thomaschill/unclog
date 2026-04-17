@@ -61,7 +61,7 @@ def _token_cost(content: PluginContent) -> int:
 def detect(
     state: InstallationState,
     activity: ActivityIndex,
-    thresholds: Thresholds,  # noqa: ARG001 — kept for stable detector signature
+    thresholds: Thresholds,
     *,
     now: datetime,
 ) -> list[Finding]:

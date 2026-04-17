@@ -13,7 +13,6 @@ from unclog.state import InstallationState
 from unclog.ui.display import DisplayOptions
 from unclog.ui.interactive import InteractiveOptions, run_interactive
 from unclog.ui.output import baseline_tokens, render_json, render_plain, render_rich
-from unclog.ui.spinner import scan_spinner
 from unclog.util.paths import claude_paths
 
 app = typer.Typer(
@@ -83,7 +82,7 @@ def root(
     no_animation: bool = typer.Option(
         False,
         "--no-animation",
-        help="Disable motion (scan spinner, post-apply countdown); keeps colour.",
+        help="Disable motion (post-apply countdown); keeps colour.",
     ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
@@ -112,15 +111,7 @@ def root(
 
     console = Console(no_color=not display.colour)
 
-    if display.plain:
-        state = run_scan(project=project, all_projects=all_projects)
-    else:
-        with scan_spinner(console, animate=display.animate) as phase:
-            state = run_scan(
-                project=project,
-                all_projects=all_projects,
-                on_phase=phase,
-            )
+    state = run_scan(project=project, all_projects=all_projects)
 
     if as_json:
         typer.echo(render_json(state))

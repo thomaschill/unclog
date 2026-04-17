@@ -7,7 +7,6 @@ consume the returned state as a pure value.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -70,13 +69,6 @@ def _find_latest_session_across_projects(
     return load_session_system_block(candidates[0][1], counter)
 
 
-PhaseCallback = Callable[[str], None]
-
-
-def _noop_phase(_: str) -> None:
-    return None
-
-
 def _plugin_key(plugin_name: str, marketplace: str | None) -> str:
     """Mirror settings.json's ``enabledPlugins`` key format."""
     return f"{plugin_name}@{marketplace}" if marketplace else plugin_name
@@ -109,11 +101,8 @@ def _enumerate_enabled_plugin_content(
 def scan_global(
     paths: ClaudePaths,
     warnings: list[str],
-    *,
-    on_phase: PhaseCallback = _noop_phase,
 ) -> GlobalScope:
     """Scan everything under a single Claude home directory."""
-    on_phase("Reading config…")
     try:
         config = load_claude_config(paths.config_json)
     except ConfigParseError as exc:
@@ -126,22 +115,18 @@ def scan_global(
         warnings.append(str(exc))
         settings = None
 
-    on_phase("Measuring CLAUDE.md composition…")
     counter = TiktokenCounter()
     claude_md_text = _read_text(paths.claude_md)
     claude_local_md_text = _read_text(paths.claude_local_md)
 
-    on_phase("Enumerating skills, agents, commands…")
     skills = enumerate_skills(paths.skills_dir)
     agents = enumerate_agents(paths.agents_dir)
     commands = enumerate_commands(paths.commands_dir)
     plugins = load_installed_plugins(paths.installed_plugins_json)
     plugin_content = _enumerate_enabled_plugin_content(plugins, settings)
 
-    on_phase("Parsing last session per project…")
     latest_session = _find_latest_session_across_projects(paths.projects_dir, counter)
 
-    on_phase("Aggregating activity index…")
     activity = load_activity_index(paths.stats_cache_json, paths.history_jsonl)
 
     return GlobalScope(
@@ -199,22 +184,14 @@ def run_scan(
     project: Path | None = None,
     all_projects: bool = False,
     cwd: Path | None = None,
-    on_phase: PhaseCallback | None = None,
 ) -> InstallationState:
-    """Run a full scan using the environment's Claude home.
-
-    ``on_phase`` is an optional callback invoked before each major scan
-    phase — the CLI wires it to the scan spinner so users see a moving
-    status line while IO happens.
-    """
-    phase = on_phase if on_phase is not None else _noop_phase
+    """Run a full scan using the environment's Claude home."""
     paths = claude_paths()
     warnings: list[str] = []
     if not paths.home.exists():
         warnings.append(f"Claude Code home does not exist: {paths.home}")
-    scope = scan_global(paths, warnings, on_phase=phase)
+    scope = scan_global(paths, warnings)
     cwd_resolved = cwd if cwd is not None else Path.cwd()
-    phase("Scanning project scopes…")
     project_scopes = _scan_projects(
         paths.home,
         scope,

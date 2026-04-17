@@ -24,9 +24,9 @@ def _description_tokens(name: str, description: str | None) -> int:
 def detect(
     state: InstallationState,
     activity: ActivityIndex,
-    thresholds: Thresholds,  # noqa: ARG001 — kept for stable detector signature
+    thresholds: Thresholds,
     *,
-    now: datetime,  # noqa: ARG001
+    now: datetime,
 ) -> list[Finding]:
     findings: list[Finding] = []
     for agent in state.global_scope.agents:
