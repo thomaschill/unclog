@@ -15,6 +15,7 @@ from typing import Literal
 from unclog.scan.config import ClaudeConfig, Settings
 from unclog.scan.filesystem import Agent, Command, InstalledPlugin, Skill
 from unclog.scan.session import SessionSystemBlock
+from unclog.scan.stats import ActivityIndex
 
 BaselineTier = Literal["lean", "typical", "clogged"]
 
@@ -53,6 +54,7 @@ class GlobalScope:
     commands: tuple[Command, ...] = ()
     installed_plugins: tuple[InstalledPlugin, ...] = ()
     latest_session: SessionSystemBlock | None = None
+    activity: ActivityIndex = field(default_factory=ActivityIndex)
 
 
 @dataclass(frozen=True)

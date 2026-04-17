@@ -22,6 +22,7 @@ from unclog.scan.session import (
     latest_session_path,
     load_session_system_block,
 )
+from unclog.scan.stats import load_activity_index
 from unclog.scan.tokens import TiktokenCounter
 from unclog.state import GlobalScope, InstallationState
 from unclog.util.paths import ClaudePaths, claude_paths
@@ -95,6 +96,7 @@ def scan_global(paths: ClaudePaths, warnings: list[str]) -> GlobalScope:
         commands=enumerate_commands(paths.commands_dir),
         installed_plugins=load_installed_plugins(paths.installed_plugins_json),
         latest_session=_find_latest_session_across_projects(paths.projects_dir, counter),
+        activity=load_activity_index(paths.stats_cache_json, paths.history_jsonl),
     )
 
 
