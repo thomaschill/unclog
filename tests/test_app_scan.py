@@ -123,6 +123,20 @@ def test_run_scan_degrades_on_malformed_claude_json(
     assert any("Could not parse" in w for w in state.warnings)
 
 
+def test_run_scan_invokes_on_phase_for_every_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = _build_minimal_home(tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    phases: list[str] = []
+    run_scan(on_phase=phases.append)
+    # Exact messages are the spinner's concern; we just want distinct
+    # phases to fire so the spinner status line animates.
+    assert len(phases) >= 3
+    assert any("config" in p.lower() for p in phases)
+    assert any("claude.md" in p.lower() for p in phases)
+
+
 def test_run_scan_picks_up_latest_session_across_projects(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
