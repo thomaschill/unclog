@@ -239,8 +239,22 @@ def _render_result(result: ApplyResult, console: Console) -> None:
         applied.append(" tokens saved", style=DIM)
     lines.append(applied)
 
+    if result.succeeded:
+        lines.append(Text(""))
+        for finding, _ in result.succeeded:
+            row = Text()
+            row.append("  ✓ ", style=SEVERITY_LEAN)
+            savings = finding.token_savings
+            if savings is not None:
+                row.append(f"{savings:>6,} tok  ", style=DIM)
+            else:
+                row.append("     — tok  ", style=DIM)
+            row.append(finding.title, style="default")
+            lines.append(row)
+
+    lines.append(Text(""))
     snapshot_line = Text()
-    snapshot_line.append("  Snapshot  ", style=DIM)
+    snapshot_line.append("Snapshot  ", style=DIM)
     snapshot_line.append(str(result.snapshot.root), style="default")
     lines.append(snapshot_line)
 
