@@ -471,12 +471,11 @@ def render_rich(
 
     if show_wordmark:
         console.print(wordmark())
-        console.print("")
     console.print(render_hero(baseline))
-    console.print("")
     if report["composition"]:
-        console.print(render_treemap(report["composition"]))
         console.print("")
+        console.print(render_treemap(report["composition"]))
+    console.print("")
     console.print(_render_inventory_chips(inv))
     _render_findings_rich(report["findings"], console)
     if report["warnings"]:
@@ -488,26 +487,38 @@ def render_rich(
 def _render_inventory_chips(inv: dict[str, int]) -> Text:
     """Render the inventory line as coloured category chips.
 
-    Each chip is ``● LABEL N`` with the dot and count in the category
-    colour and the label dim. Shares the palette with the picker so the
-    user's eye learns the taxonomy once and carries it everywhere.
+    Each chip is ``N label`` with the count in the category colour and
+    the label dim. Shares the picker's palette so the user's eye learns
+    the taxonomy once and carries it everywhere. Zero-valued categories
+    are dropped to keep the line compact on narrow terminals.
     """
+    mcp_label = "MCP"
+    if inv["mcp_servers"] and inv.get("mcp_servers_project") == inv["mcp_servers"]:
+        mcp_label = "MCP (project-scoped)"
+    elif inv.get("mcp_servers_project"):
+        mcp_label = f"MCP ({inv['mcp_servers_project']} project-scoped)"
+
     chips: list[tuple[str, str, int]] = [
         ("skills", "skills", inv["skills"]),
         ("agents", "agents", inv["agents"]),
         ("commands", "commands", inv["commands"]),
         ("plugins", "plugins", inv["plugins"]),
+        ("mcp", mcp_label, inv["mcp_servers"]),
+        ("projects", "projects", inv["projects_known"]),
     ]
-    mcp_label = _mcp_label(inv).replace(f"{inv['mcp_servers']} ", "", 1)
-    chips.append(("mcp", mcp_label, inv["mcp_servers"]))
-    chips.append(("projects", "known projects", inv["projects_known"]))
 
     text = Text()
-    for i, (key, label, value) in enumerate(chips):
+    first = True
+    for key, label, value in chips:
+        if value == 0 and key != "plugins":
+            # Skip zero categories to save space; plugins=0 is still
+            # worth surfacing so users know their baseline isn't hiding
+            # bundled skills/agents they forgot about.
+            continue
         colour = _INVENTORY_CHIP_COLOUR.get(key, DIM)
-        if i:
-            text.append("   ", style=DIM)
-        text.append("● ", style=colour)
+        if not first:
+            text.append("  ·  ", style=DIM)
+        first = False
         text.append(f"{value} ", style=f"bold {colour}")
         text.append(label, style=DIM)
     return text
@@ -565,8 +576,8 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
     for ftype, group in groups.items():
         label = _INFORMATIONAL_GROUP_LABEL.get(ftype, ftype.replace("_", " "))
         names = [_short_name(f) for f in group]
-        shown = names[:6]
-        more = f" +{len(names) - 6} more" if len(names) > len(shown) else ""
+        shown = names[:4]
+        more = f" +{len(names) - 4} more" if len(names) > len(shown) else ""
         row = Text()
         row.append("  · ", style=DIM)
         row.append(f"{len(group)}", style=f"bold {DIM}")

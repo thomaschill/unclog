@@ -58,5 +58,6 @@ def test_scan_spinner_yields_callable_even_when_animating() -> None:
         assert callable(phase)
         phase("Phase A")
         phase("Phase B")
-    # Transient=True clears the live render; the done-line remains.
-    assert DONE_MESSAGE in buf.getvalue()
+    # Transient=True clears the live render cleanly — no persistent
+    # "Scan complete" line; the hero that follows is the done-signal.
+    assert DONE_MESSAGE not in buf.getvalue()

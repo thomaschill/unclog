@@ -34,7 +34,7 @@ from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.text import Text
 
-from unclog.ui.theme import ACCENT, DIM, SEVERITY_LEAN
+from unclog.ui.theme import ACCENT, DIM
 
 FRAMES: tuple[str, ...] = (
     "·   ",
@@ -97,13 +97,6 @@ def scan_spinner(
 
         yield set_phase
         time.sleep(HOLD_AFTER_COMPLETE_S)
-
-    console.print(
-        Text.assemble(
-            ("✓ ", SEVERITY_LEAN),
-            (DONE_MESSAGE, DIM),
-        )
-    )
 
 
 def _static_phase(console: Console) -> Callable[[str], None]:

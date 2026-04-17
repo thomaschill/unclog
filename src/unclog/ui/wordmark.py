@@ -14,16 +14,16 @@ from unclog import __version__
 from unclog.ui.theme import ACCENT, DIM
 
 # The leading glyph sequence evokes rising flow clearing a pipe.
-# Kept to 2 lines so the wordmark is compact even at narrow widths.
-WORDMARK_LINE_1 = " ▁▂▃  unclog"
+# Kept to a single compact line so CLI output budget goes to content,
+# not chrome.
+WORDMARK_GLYPHS = "▁▂▃"
+WORDMARK_NAME = "unclog"
 SUBTITLE_SUFFIX = "local-only audit"
 
 
 def wordmark() -> RenderableType:
-    line = Text(WORDMARK_LINE_1, style=f"bold {ACCENT}")
-    subtitle = Text(f"      v{__version__}  ·  {SUBTITLE_SUFFIX}", style=DIM)
     block = Text()
-    block.append_text(line)
-    block.append("\n")
-    block.append_text(subtitle)
+    block.append(f"{WORDMARK_GLYPHS} ", style=f"bold {ACCENT}")
+    block.append(WORDMARK_NAME, style=f"bold {ACCENT}")
+    block.append(f"  v{__version__}  ·  {SUBTITLE_SUFFIX}", style=DIM)
     return block

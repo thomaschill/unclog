@@ -68,7 +68,11 @@ _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
 }
 
 _DEFAULT_BADGE = ("other", "#9ca3af")
-_MIN_VISIBLE_ROWS = 8
+_MIN_VISIBLE_ROWS = 6
+# Cap so the header block (wordmark, hero, composition, inventory,
+# findings summary) stays on-screen. On a 30-row terminal this leaves
+# ~12 lines for the report above the picker.
+_MAX_VISIBLE_ROWS = 12
 _FRAME_OVERHEAD = 10  # panel borders + header + legend + footer
 _CURSOR_MARGIN = 3  # keep this many rows visible above/below the cursor
 
@@ -233,9 +237,16 @@ def _build_frame(
 
 
 def _compute_visible_rows(console: Console) -> int:
-    """Reserve room for panel chrome + status + keybinds; rest is rows."""
+    """Reserve room for panel chrome + status + keybinds; rest is rows.
+
+    Capped at ``_MAX_VISIBLE_ROWS`` so the scan report above the picker
+    (wordmark, hero, top contributors, inventory, findings summary)
+    remains on-screen on normal laptop terminals. Users can scroll the
+    picker with ↑↓/PgUp/PgDn when the list exceeds the cap.
+    """
     height = console.size.height or 24
-    return max(_MIN_VISIBLE_ROWS, height - _FRAME_OVERHEAD)
+    available = height - _FRAME_OVERHEAD
+    return max(_MIN_VISIBLE_ROWS, min(_MAX_VISIBLE_ROWS, available))
 
 
 def _move_cursor(state: _State, total: int, delta: int) -> None:

@@ -4,7 +4,6 @@ from rich.console import Console
 
 from unclog.ui.hero import (
     DEFAULT_TREEMAP_WIDTH,
-    _apportion_widths,
     render_hero,
     render_treemap,
 )
@@ -42,7 +41,7 @@ def test_hero_renders_number_with_tier_label() -> None:
     out = _capture(render_hero(baseline))
     assert "42,180" in out
     assert "typical" in out
-    assert "measured from latest session" in out
+    assert "from latest session" in out
 
 
 def test_hero_colours_lean_tier_green() -> None:
@@ -68,7 +67,7 @@ def test_hero_colours_clogged_tier_red() -> None:
     ansi = _capture_ansi(render_hero(baseline))
     assert _rgb(SEVERITY_CLOGGED) in ansi
     plain = _capture(render_hero(baseline))
-    assert "3 MCP source(s) unmeasured" in plain
+    assert "3 MCP unmeasured" in plain
 
 
 def test_hero_typical_tier_amber() -> None:
@@ -111,19 +110,6 @@ def test_treemap_skips_unmeasured_entries() -> None:
 def test_treemap_empty_when_nothing_measurable() -> None:
     out = _capture(render_treemap([{"source": "mcp:notion", "tokens": None}]))
     assert "no measurable composition" in out
-
-
-def test_apportion_widths_sums_to_total() -> None:
-    widths = _apportion_widths([0.5, 0.3, 0.2], 80)
-    assert sum(widths) == 80
-    # Non-zero shares get at least one column.
-    assert all(w >= 1 for w in widths)
-
-
-def test_apportion_widths_handles_tiny_share() -> None:
-    widths = _apportion_widths([0.98, 0.01, 0.01], 50)
-    assert sum(widths) == 50
-    assert widths[1] >= 1 and widths[2] >= 1
 
 
 def test_wordmark_includes_product_name_and_version() -> None:
