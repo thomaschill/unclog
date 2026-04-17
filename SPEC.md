@@ -111,11 +111,8 @@ unclog --json                # structured output to stdout, no color/animation
 unclog --plain               # ASCII-only, no color, no animation (for CI)
 unclog --dry-run             # prompts run, no files written, no snapshot
 unclog --yes                 # apply pre-checked safe findings, skip all prompts
-unclog --all-projects        # audit every known project in ~/.claude.json
-unclog --project PATH        # audit a specific project instead of CWD
-unclog --accurate            # use Anthropic count-tokens API instead of tiktoken
-unclog --no-animation        # disable motion (spinners, countdowns); keeps color
-unclog --verbose             # include dim-gray debug notes in report
+unclog --project PATH        # narrow the audit to a single project
+unclog --no-animation        # disable post-apply countdown; keeps color
 
 unclog restore               # list snapshots
 unclog restore <id>          # restore a specific snapshot
@@ -127,10 +124,10 @@ unclog --version
 
 Rules:
 
-- `--report`, `--json`, `--dry-run`, `--yes` are mutually exclusive with each other where they conflict; `--report | --json` imply `--no-animation` and `--plain`-compatible styling.
+- `--dry-run` and `--yes` are mutually exclusive; `--report` cannot combine with either. `--report | --json` imply no animation and `--plain`-compatible styling.
 - `--json` emits a single JSON document, no logs to stdout; diagnostics go to stderr.
 - `NO_COLOR=1` or non-TTY stdout auto-forces `--plain --no-animation`.
-- If CWD is not a known project and `--all-projects` is not set, audit global scope only and print a one-line note.
+- Default scope is global + every project registered in `~/.claude.json` + the CWD if it looks project-like but isn't registered. `--project PATH` narrows to a single project.
 
 ## 5. Data sources
 
@@ -266,9 +263,8 @@ Project name is derived from the last path segment unless a project config provi
 
 ### 8.1 Which projects get audited
 
-- Default: current working directory, if it matches a known project in `~/.claude.json`'s `projects{}` OR if it contains `.claude/` or `CLAUDE.md`. Otherwise global only.
-- `--project PATH`: audit exactly that path.
-- `--all-projects`: iterate every key in `~/.claude.json`'s `projects{}`. Skip paths that no longer exist on disk (report them as stale project entries).
+- Default: global + every key in `~/.claude.json`'s `projects{}` + the CWD if it looks project-like (`.claude/` or `CLAUDE.md` present) but isn't already registered. Paths that no longer exist on disk are reported as stale project warnings.
+- `--project PATH`: narrow the audit to exactly that path (global still scanned).
 
 ### 8.2 Cross-scope findings
 
