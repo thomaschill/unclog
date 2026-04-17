@@ -4,7 +4,7 @@ Two-phase flow per spec §3.1:
 
 1. After the scan report is printed, prompt ``Fix these? [y/N]``. The
    default is No so mashing enter exits cleanly.
-2. If the user accepts, show a questionary checkbox list. Findings
+2. If the user accepts, show a curses-backed pick checkbox list. Findings
    whose ``auto_checked`` bit is ``True`` are pre-ticked; everything
    else starts unchecked. The user toggles selections, hits enter.
 3. A second prompt ``Apply N changes? [y/N]`` confirms the shortlist.
@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-import questionary
+from pick import Picker
 from rich.console import Console
 
 from unclog.apply.runner import ApplyResult, apply_findings
@@ -51,26 +51,52 @@ class Prompter(Protocol):
     ) -> list[Finding]: ...
 
 
-class QuestionaryPrompter:
-    """Default prompter backed by the ``questionary`` library."""
+class PickPrompter:
+    """Default prompter backed by the ``pick`` library (curses-based).
+
+    We deliberately avoid ``questionary``/``prompt_toolkit`` here because
+    their rendering path depends on terminal Cursor Position Request
+    (CPR) support. Some terminals (and all ``expect`` ptys) silently
+    drop those queries, causing the picker to collapse into "accept
+    every default" with no way to toggle. ``pick`` uses curses directly,
+    which works reliably in every interactive terminal we've tested.
+    """
 
     def confirm(self, message: str, default: bool) -> bool:
-        answer = questionary.confirm(message, default=default).ask()
-        # ``ask()`` returns None on Ctrl-C / stream close — treat as No.
-        return bool(answer) if answer is not None else False
+        suffix = " [Y/n] " if default else " [y/N] "
+        try:
+            answer = input(message + suffix).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if not answer:
+            return default
+        return answer.startswith("y")
 
     def multiselect(
         self, message: str, choices: list[tuple[str, Finding]], defaults: set[str]
     ) -> list[Finding]:
-        finding_by_title = {title: finding for title, finding in choices}
-        q_choices = [
-            questionary.Choice(title=title, checked=(title in defaults))
-            for title, _ in choices
-        ]
-        picked = questionary.checkbox(message, choices=q_choices).ask()
-        if picked is None:
+        if not choices:
             return []
-        return [finding_by_title[title] for title in picked if title in finding_by_title]
+        titles = [title for title, _ in choices]
+        findings = [finding for _, finding in choices]
+        preselected = [i for i, title in enumerate(titles) if title in defaults]
+        picker = Picker(
+            options=titles,
+            title=(
+                f"{message}\n"
+                "↑/↓ move · space toggle · enter submit · q quit"
+            ),
+            multiselect=True,
+            min_selection_count=0,
+        )
+        # ``pick`` exposes a mutable attribute for pre-selection — this is
+        # the documented way to check items before the picker starts.
+        picker.selected_indexes = list(preselected)
+        result = picker.start()
+        # Multiselect returns list[tuple[option, index]]; single returns tuple.
+        if not isinstance(result, list):
+            return []
+        return [findings[index] for _, index in result]
 
 
 @dataclass
@@ -132,14 +158,25 @@ def run_interactive(
             # No interactive input available and --yes wasn't set. Silently
             # skip the fix flow; the report already printed.
             return None
-        active_prompter: Prompter = QuestionaryPrompter()
+        active_prompter: Prompter = PickPrompter()
     else:
         active_prompter = prompter
 
-    if not active_prompter.confirm("Fix these?", default=False):
-        return None
-
-    choices = [(_format_choice(f), f) for f in applicable]
+    # Sort descending by token weight so the biggest wins are at the top
+    # of the picker regardless of check state. Entries without a measured
+    # savings value sort last.
+    sorted_applicable = sorted(
+        applicable,
+        key=lambda f: (f.token_savings is None, -(f.token_savings or 0), f.title),
+    )
+    console.print("")
+    console.print(
+        "[dim]Signal note: v0.1 only sees [/dim][bold]@mentions[/bold]"
+        "[dim] in history. Agents invoked via the Task tool or by other "
+        "agents leave no trace and will appear pre-checked even if active. "
+        "Review before confirming.[/dim]"
+    )
+    choices = [(_format_choice(f), f) for f in sorted_applicable]
     defaults = {title for title, f in choices if f.auto_checked}
     selected = active_prompter.multiselect(
         "Select fixes to apply:", choices=choices, defaults=defaults
@@ -290,13 +327,21 @@ def _maybe_warn_retention(paths: ClaudePaths, console: Console) -> None:
 
 
 def _format_choice(finding: Finding) -> str:
+    """Format one row of the multiselect picker.
+
+    Token count is positioned on the LEFT (right-padded to a fixed width)
+    so any terminal-width truncation never drops the most
+    important piece of information. Example line:
+
+        4,192 tok  [global] Remove agent Frontend Developer
+    """
     savings = (
         f"{finding.token_savings:>6,} tok"
         if finding.token_savings is not None
-        else "       —"
+        else "     — tok"
     )
     scope_kind = finding.scope.kind
-    return f"[{scope_kind}] {finding.title}  ·  {savings}"
+    return f"{savings}  [{scope_kind}] {finding.title}"
 
 
 def _stdin_is_tty() -> bool:
@@ -308,7 +353,7 @@ def _stdin_is_tty() -> bool:
 
 __all__ = [
     "InteractiveOptions",
+    "PickPrompter",
     "Prompter",
-    "QuestionaryPrompter",
     "run_interactive",
 ]

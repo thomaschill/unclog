@@ -400,31 +400,55 @@ def render_rich(
 
 
 def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> None:
-    """Render the findings list block in the TTY renderer."""
+    """Render the findings summary block in the TTY renderer.
+
+    Deliberately does NOT enumerate every removable finding. Earlier
+    builds printed 180+ static ``[x]``-marker lines before the
+    interactive picker fired, which (a) looked like a checkbox UI but
+    wasn't, (b) scrolled the real picker off-screen, and (c) duplicated
+    what the picker already shows. We now print:
+
+    - a one-line summary with counts + removable-token total, and
+    - the flag_only (informational) block inline, since those are the
+      only findings the interactive flow doesn't render itself.
+
+    The ``interactive picker below`` teaser is a reminder that the real
+    UI comes next. In ``--report`` mode (no interactive follow-up) the
+    caller suppresses this via ``--plain``/``--report`` paths which
+    route through :func:`render_plain` instead.
+    """
     console.print("")
     if not findings:
         console.print("[dim]findings: none — nothing to clean up right now[/dim]")
         return
-    auto = sum(1 for f in findings if f.get("auto_checked"))
-    info = sum(1 for f in findings if f.get("action", {}).get("primitive") == "flag_only")
-    opt_in = len(findings) - auto - info
-    parts = [f"{auto} auto-fix"]
-    if opt_in:
-        parts.append(f"{opt_in} opt-in")
-    if info:
-        parts.append(f"{info} informational")
+    removable = [f for f in findings if f.get("action", {}).get("primitive") != "flag_only"]
+    informational = [f for f in findings if f.get("action", {}).get("primitive") == "flag_only"]
+
+    removable_tokens = sum(f.get("token_savings") or 0 for f in removable)
+    parts = []
+    if removable:
+        token_fragment = f" (~{removable_tokens:,} tok)" if removable_tokens else ""
+        parts.append(f"[#22c55e]{len(removable)} removable[/#22c55e]{token_fragment}")
+    if informational:
+        parts.append(f"[dim]{len(informational)} informational[/dim]")
     console.print(
-        f"[bold]Found {len(findings)} issue(s).[/bold] "
-        f"[dim]{', '.join(parts)}.[/dim]"
+        f"[bold]Found {len(findings)} issue(s).[/bold] " + ", ".join(parts) + "."
     )
-    for f in findings:
-        primitive = f.get("action", {}).get("primitive")
-        if f.get("auto_checked"):
-            marker = "[#22c55e][x][/#22c55e]"
-        elif primitive == "flag_only":
-            marker = "[dim][i][/dim]"
-        else:
-            marker = "[dim][ ][/dim]"
-        scope_kind = f["scope"].get("kind", "global")
-        scope_label = f"[dim][{scope_kind:>7}][/dim]"
-        console.print(f" {marker} {scope_label} {f['title']}  [dim]· {f['reason']}[/dim]")
+
+    if informational:
+        console.print("")
+        console.print("[dim]Informational (handle manually):[/dim]")
+        for f in informational:
+            scope_kind = f["scope"].get("kind", "global")
+            console.print(
+                f"  [dim]·[/dim] [dim][{scope_kind:>7}][/dim] "
+                f"{f['title']}  [dim]· {f['reason']}[/dim]"
+            )
+
+    if removable:
+        console.print("")
+        console.print(
+            "[dim]→ Opening picker. [/dim][bold]↑/↓[/bold][dim] move · [/dim]"
+            "[bold]space[/bold][dim] toggle · [/dim][bold]enter[/bold]"
+            "[dim] submit · [/dim][bold]q[/bold][dim] quit.[/dim]"
+        )

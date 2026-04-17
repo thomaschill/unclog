@@ -320,24 +320,24 @@ wheels = [
 ]
 
 [[package]]
+name = "pick"
+version = "2.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "windows-curses", marker = "sys_platform == 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b6/f9/450cc44b21190d99b86df3e59f7573d85f3ef2c4f7670ce4f65cb2def3b4/pick-2.6.0.tar.gz", hash = "sha256:f24434a845ae9265ebf7657fc224b9a203ac75aa576b568e061484a72e27be82", size = 6266, upload-time = "2026-02-28T13:47:06.31Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a5/93/704982e09f3481d2055cf8ef7372445dc8ea6c883daf60f0816deb9e362c/pick-2.6.0-py3-none-any.whl", hash = "sha256:2acd5cad09be96398fba3b8be89454929de7b05362e01c69d94a05801820871f", size = 7890, upload-time = "2026-02-28T13:47:05.311Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412, upload-time = "2025-05-15T12:30:07.975Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
-]
-
-[[package]]
-name = "prompt-toolkit"
-version = "3.0.52"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "wcwidth" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/a1/96/06e01a7b38dce6fe1db213e061a4602dd6032a8a97ef6c1a862537732421/prompt_toolkit-3.0.52.tar.gz", hash = "sha256:28cde192929c8e7321de85de1ddbe736f1375148b02f2e17edd840042b1be855", size = 434198, upload-time = "2025-08-27T15:24:02.057Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/84/03/0d3ce49e2505ae70cf43bc5bb3033955d2fc9f932163e84dc0779cc47f48/prompt_toolkit-3.0.52-py3-none-any.whl", hash = "sha256:9aac639a3bbd33284347de5ad8d68ecc044b91a762dc39b7c21095fcd6a19955", size = 391431, upload-time = "2025-08-27T15:23:59.498Z" },
 ]
 
 [[package]]
@@ -375,18 +375,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9b/7b/ab8f1fc1e687218aa66acec1c3674d9c443f6a2dc8cb6a50f464548ffa34/pytest-snapshot-0.9.0.tar.gz", hash = "sha256:c7013c3abc3e860f9feff899f8b4debe3708650d8d8242a61bf2625ff64db7f3", size = 19877, upload-time = "2022-04-23T17:35:31.751Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/29/518f32faf6edad9f56d6e0107217f7de6b79f297a47170414a2bd4be7f01/pytest_snapshot-0.9.0-py3-none-any.whl", hash = "sha256:4b9fe1c21c868fe53a545e4e3184d36bc1c88946e3f5c1d9dd676962a9b3d4ab", size = 10715, upload-time = "2022-04-23T17:35:30.288Z" },
-]
-
-[[package]]
-name = "questionary"
-version = "2.1.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "prompt-toolkit" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/45/eafb0bba0f9988f6a2520f9ca2df2c82ddfa8d67c95d6625452e97b204a5/questionary-2.1.1.tar.gz", hash = "sha256:3d7e980292bb0107abaa79c68dd3eee3c561b83a0f89ae482860b181c8bd412d", size = 25845, upload-time = "2025-08-28T19:00:20.851Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/3c/26/1062c7ec1b053db9e499b4d2d5bc231743201b74051c973dadeac80a8f43/questionary-2.1.1-py3-none-any.whl", hash = "sha256:a51af13f345f1cdea62347589fbb6df3b290306ab8930713bfae4d475a7d4a59", size = 36753, upload-time = "2025-08-28T19:00:19.56Z" },
 ]
 
 [[package]]
@@ -638,7 +626,7 @@ name = "unclog"
 version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
-    { name = "questionary" },
+    { name = "pick" },
     { name = "rich" },
     { name = "tiktoken" },
     { name = "typer" },
@@ -655,9 +643,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "pick", specifier = ">=2.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-snapshot", marker = "extra == 'dev'", specifier = ">=0.9" },
-    { name = "questionary", specifier = ">=2.0" },
     { name = "rich", specifier = ">=13.7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "tiktoken", specifier = ">=0.7" },
@@ -675,10 +663,16 @@ wheels = [
 ]
 
 [[package]]
-name = "wcwidth"
-version = "0.6.0"
+name = "windows-curses"
+version = "2.4.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/35/a2/8e3becb46433538a38726c948d3399905a4c7cabd0df578ede5dc51f0ec2/wcwidth-0.6.0.tar.gz", hash = "sha256:cdc4e4262d6ef9a1a57e018384cbeb1208d8abbc64176027e2c2455c81313159", size = 159684, upload-time = "2026-02-06T19:19:40.919Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/5a/199c59e0a824a3db2b89c5d2dade7ab5f9624dbf6448dc291b46d5ec94d3/wcwidth-0.6.0-py3-none-any.whl", hash = "sha256:1a3a1e510b553315f8e146c54764f4fb6264ffad731b3d78088cdb1478ffbdad", size = 94189, upload-time = "2026-02-06T19:19:39.646Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/58/5fd430fec0ebe1cef88ddccba345ca119f1b44e58f58d6998878a01c9973/windows_curses-2.4.2-cp311-cp311-win32.whl", hash = "sha256:ecf7af9c97002af661d3e47b9c5eb31cdb7629a032adcdab46530efea8ba1864", size = 71135, upload-time = "2026-03-31T12:44:35.863Z" },
+    { url = "https://files.pythonhosted.org/packages/84/62/e2bae0ab9c5c80dca9a708a4cb9c8afaf0ef61c8d4459b57f96785040831/windows_curses-2.4.2-cp311-cp311-win_amd64.whl", hash = "sha256:03c4ef0095ab8212ed964236d51b4d8c815f302c5a7de94831dae468f05ce333", size = 81863, upload-time = "2026-03-31T12:44:36.834Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/9c/b2a3706c8edadae8ae88b327ba072d6056ad1b492f9996214cff027e9f01/windows_curses-2.4.2-cp312-cp312-win32.whl", hash = "sha256:7ec4629685add716d494e8fbdd0b83485de726e9deeda57d30e742c77a32a156", size = 71547, upload-time = "2026-03-31T12:44:37.797Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/ee/8c5da36191524856fb2c675f8cae99211ccf77bcd4e4a9010477e08000ac/windows_curses-2.4.2-cp312-cp312-win_amd64.whl", hash = "sha256:df782859176f9e8142618e4966d6cee7a53a8b1c819faeb6e606a60fa4f8972a", size = 82282, upload-time = "2026-03-31T12:44:39.106Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/54/195f2c4d0258ced34a401c8e3c9eefa2aa2221a9f0179ae64ad3cb039e64/windows_curses-2.4.2-cp313-cp313-win32.whl", hash = "sha256:248bf3f1d973e92ca193b1ea8a626ec7f81a66be6f6d6c5e31ff82056453678d", size = 71458, upload-time = "2026-03-31T12:44:40.184Z" },
+    { url = "https://files.pythonhosted.org/packages/47/e8/38fd0fef95271280a77a4f3b65e0961d3c39716388b39c08b3040bfb4f2c/windows_curses-2.4.2-cp313-cp313-win_amd64.whl", hash = "sha256:1bf3d0c902374b6c430a954adcb686a5ecd7a31fc4195d31136385b5c1bea925", size = 82200, upload-time = "2026-03-31T12:44:41.503Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/22/f90c7d1d83464eb63345802f33e8de41bd732521d9a60a69ad985c8faa90/windows_curses-2.4.2-cp314-cp314-win32.whl", hash = "sha256:a970bf067b3126251423b4da051ef8c1c77acf6294ec96a7d6de7f6b9e5c27a0", size = 77028, upload-time = "2026-03-31T12:44:42.611Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/6a/1f8754de746474a049a841e139b443b250a96908d6913ccf2db9a4303584/windows_curses-2.4.2-cp314-cp314-win_amd64.whl", hash = "sha256:6c22cb0310500dfbfe54c76354e37070e300d5473596d48ac4f9c65b2d578b6f", size = 86361, upload-time = "2026-03-31T12:44:43.893Z" },
 ]

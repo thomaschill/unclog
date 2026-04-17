@@ -127,48 +127,47 @@ def _make_skill(tmp_path: Path, slug: str) -> Skill:
     )
 
 
-def test_unused_skill_requires_active_install(tmp_path: Path) -> None:
+def test_unused_skill_emits_one_finding_per_skill_even_without_activity(tmp_path: Path) -> None:
+    # Fresh skills, no activity record — detector still surfaces them so
+    # the user can triage. (v0.1 intentional: age/idle gates removed.)
+    skill_a = _make_skill(tmp_path, "fashion")
+    skill_b = _make_skill(tmp_path, "pitch")
+    state = _state(skills=(skill_a, skill_b), activity=ActivityIndex())
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_skill"]
+    assert {f.id for f in findings} == {"unused_skill:fashion", "unused_skill:pitch"}
+    # No @mention ever → pre-checked.
+    assert all(f.auto_checked for f in findings)
+    # Every finding carries a concrete token-savings estimate for the UI.
+    assert all(f.token_savings is not None and f.token_savings > 0 for f in findings)
+
+
+def test_unused_skill_auto_check_cleared_when_mentioned_in_history(tmp_path: Path) -> None:
     skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
-    # No activity at all: detector refuses to flag.
-    state = _state(skills=(skill,), activity=ActivityIndex())
-    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
-    assert [f for f in findings if f.type == "unused_skill"] == []
-
-
-def test_unused_skill_skipped_when_install_is_overall_dormant(tmp_path: Path) -> None:
-    skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
-    state = _state(
-        skills=(skill,),
-        activity=ActivityIndex(last_active_overall=NOW - timedelta(days=120)),
-    )
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    assert [f for f in findings if f.type == "unused_skill"] == []
-
-
-def test_unused_skill_flags_stale_file_without_mention(tmp_path: Path) -> None:
-    skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
-    state = _state(skills=(skill,), activity=_active_index())
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    matches = [f for f in findings if f.type == "unused_skill"]
-    assert len(matches) == 1
-    assert matches[0].auto_checked is False
-    assert matches[0].action.primitive == "delete_file"
-
-
-def test_unused_skill_respects_at_mention_within_window(tmp_path: Path) -> None:
-    skill = _make_skill(tmp_path, "fashion")
-    _age_file(skill.skill_md_path, days=200)
     recent_mention = NOW - timedelta(days=10)
     activity = ActivityIndex(
         last_active_overall=NOW - timedelta(days=1),
         at_mention_last_used=MappingProxyType({"fashion": recent_mention}),
     )
     state = _state(skills=(skill,), activity=activity)
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    assert [f for f in findings if f.type == "unused_skill"] == []
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_skill"]
+    assert len(findings) == 1
+    # Still emitted so the user can choose, but requires an explicit opt-in.
+    assert findings[0].auto_checked is False
+    assert "opt in" in findings[0].reason.lower()
+
+
+def test_unused_skill_emits_regardless_of_install_activity(tmp_path: Path) -> None:
+    # Historically this was gated on install-active; now it isn't.
+    skill = _make_skill(tmp_path, "fashion")
+    state = _state(
+        skills=(skill,),
+        activity=ActivityIndex(last_active_overall=NOW - timedelta(days=400)),
+    )
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_skill"]
+    assert len(findings) == 1
 
 
 def _make_agent(tmp_path: Path, slug: str) -> Agent:
@@ -186,14 +185,29 @@ def _make_agent(tmp_path: Path, slug: str) -> Agent:
     )
 
 
-def test_unused_agent_flags_stale_file(tmp_path: Path) -> None:
+def test_unused_agent_emits_one_finding_per_agent(tmp_path: Path) -> None:
+    agent_a = _make_agent(tmp_path, "planner")
+    agent_b = _make_agent(tmp_path, "reviewer")
+    state = _state(agents=(agent_a, agent_b), activity=ActivityIndex())
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_agent"]
+    assert {f.id for f in findings} == {"unused_agent:planner", "unused_agent:reviewer"}
+    assert all(f.auto_checked for f in findings)
+    assert all(f.token_savings is not None for f in findings)
+    assert all(f.action.primitive == "delete_file" for f in findings)
+
+
+def test_unused_agent_clears_auto_check_when_mentioned(tmp_path: Path) -> None:
     agent = _make_agent(tmp_path, "planner")
-    _age_file(agent.path, days=120)
-    state = _state(agents=(agent,), activity=_active_index())
-    findings = detect(state, state.global_scope.activity, Thresholds(unused_days=90), now=NOW)
-    matches = [f for f in findings if f.type == "unused_agent"]
-    assert len(matches) == 1
-    assert matches[0].auto_checked is False
+    activity = ActivityIndex(
+        last_active_overall=NOW - timedelta(days=1),
+        at_mention_last_used=MappingProxyType({"planner": NOW - timedelta(days=3)}),
+    )
+    state = _state(agents=(agent,), activity=activity)
+    findings = [f for f in detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+                if f.type == "unused_agent"]
+    assert len(findings) == 1
+    assert findings[0].auto_checked is False
 
 
 # --- dead_mcp / unused_mcp -----------------------------------------------
