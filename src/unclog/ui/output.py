@@ -24,7 +24,6 @@ import json
 from typing import Any
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.text import Text
 
 from unclog import __version__
@@ -514,89 +513,84 @@ def _render_inventory_chips(inv: dict[str, int]) -> Text:
     return text
 
 
+_INFORMATIONAL_GROUP_LABEL: dict[str, str] = {
+    "missing_claudeignore": "missing .claudeignore",
+    "disabled_plugin_residue": "recently-disabled plugin residue",
+    "claude_md_dead_ref": "CLAUDE.md dead references",
+}
+
+
 def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> None:
-    """Render the findings summary block in the TTY renderer.
+    """Print a one-line summary + grouped informational hints.
 
-    Deliberately does NOT enumerate every removable finding. Earlier
-    builds printed 180+ static ``[x]``-marker lines before the
-    interactive picker fired, which (a) looked like a checkbox UI but
-    wasn't, (b) scrolled the real picker off-screen, and (c) duplicated
-    what the picker already shows. We now print a compact Rich panel
-    with counts, the flag_only (informational) list, and a picker teaser
-    — all framed so the block reads as a single unit of information.
+    The picker is the real findings UI — it shows every removable item
+    with a live selection total. This block exists to (a) give users a
+    count before the picker opens and (b) surface the flag_only items
+    the picker can't show, grouped by type so we don't emit nine nearly
+    identical lines when every project is missing a ``.claudeignore``.
 
-    In ``--report`` mode (no interactive follow-up) the caller
-    suppresses this via ``--plain``/``--report`` paths which route
-    through :func:`render_plain` instead.
+    ``--report``/``--plain`` paths route through :func:`render_plain`
+    instead and never hit this renderer.
     """
     console.print("")
     if not findings:
-        console.print(
-            Panel(
-                Text("No issues found — your install is already lean.", style=DIM),
-                border_style=SEVERITY_LEAN,
-                padding=(0, 2),
-            )
-        )
+        console.print(f"[{SEVERITY_LEAN}]✓[/{SEVERITY_LEAN}] [dim]No issues found.[/dim]")
         return
 
     removable = [f for f in findings if f.get("action", {}).get("primitive") != "flag_only"]
     informational = [f for f in findings if f.get("action", {}).get("primitive") == "flag_only"]
     removable_tokens = sum(f.get("token_savings") or 0 for f in removable)
 
-    header = Text()
-    header.append(f"{len(findings)}", style=f"bold {ACCENT}")
-    header.append(" issue(s) found", style=DIM)
+    summary = Text()
+    summary.append(f"{len(findings)}", style=f"bold {ACCENT}")
+    summary.append(" issue(s)", style=DIM)
     if removable:
-        header.append("    ", style=DIM)
-        header.append(f"{len(removable)}", style=f"bold {SEVERITY_LEAN}")
-        header.append(" removable", style=DIM)
+        summary.append("  ·  ", style=DIM)
+        summary.append(f"{len(removable)}", style=f"bold {SEVERITY_LEAN}")
+        summary.append(" removable", style=DIM)
         if removable_tokens:
-            header.append("  ·  ", style=DIM)
-            header.append(f"~{removable_tokens:,}", style=f"bold {SEVERITY_LEAN}")
-            header.append(" tok to save", style=DIM)
+            summary.append(f" (~{removable_tokens:,} tok)", style=DIM)
     if informational:
-        header.append("    ", style=DIM)
-        header.append(f"{len(informational)}", style=f"bold {DIM}")
-        header.append(" informational", style=DIM)
+        summary.append("  ·  ", style=DIM)
+        summary.append(f"{len(informational)}", style=DIM)
+        summary.append(" informational", style=DIM)
+    console.print(summary)
 
-    lines: list[Text] = [header]
+    if not informational:
+        return
 
-    if informational:
-        lines.append(Text(""))
-        lines.append(Text("Informational (handle manually)", style=f"bold {DIM}"))
-        for f in informational:
-            scope_kind = f["scope"].get("kind", "global")
-            row = Text()
-            row.append("  · ", style=DIM)
-            row.append(f"[{scope_kind:>7}] ", style=DIM)
-            row.append(f["title"], style="default")
-            row.append(f"  · {f['reason']}", style=DIM)
-            lines.append(row)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for f in informational:
+        groups.setdefault(f["type"], []).append(f)
+    for ftype, group in groups.items():
+        label = _INFORMATIONAL_GROUP_LABEL.get(ftype, ftype.replace("_", " "))
+        names = [_short_name(f) for f in group]
+        shown = names[:6]
+        more = f" +{len(names) - 6} more" if len(names) > len(shown) else ""
+        row = Text()
+        row.append("  · ", style=DIM)
+        row.append(f"{len(group)}", style=f"bold {DIM}")
+        row.append(f" {label}: ", style=DIM)
+        row.append(", ".join(shown), style="default")
+        if more:
+            row.append(more, style=DIM)
+        console.print(row)
 
-    if removable:
-        lines.append(Text(""))
-        teaser = Text()
-        teaser.append("→ Opening picker.  ", style=DIM)
-        for label, keys in (
-            ("move", "↑↓"),
-            ("toggle", "space"),
-            ("all", "A"),
-            ("none", "n"),
-            ("submit", "enter"),
-            ("quit", "q"),
-        ):
-            teaser.append(keys, style=f"bold {ACCENT}")
-            teaser.append(f" {label}  ", style=DIM)
-        lines.append(teaser)
 
-    body = Text("\n").join(lines)
-    console.print(
-        Panel(
-            body,
-            title=Text("Findings", style=f"bold {ACCENT}"),
-            title_align="left",
-            border_style=DIM,
-            padding=(1, 2),
-        )
-    )
+def _short_name(finding: dict[str, Any]) -> str:
+    """Extract a terse identifier for a finding used in grouped lists."""
+    from pathlib import Path as _P
+
+    scope = finding.get("scope", {})
+    project_path = scope.get("project_path")
+    if project_path:
+        return _P(project_path).name
+    action = finding.get("action", {})
+    plugin_key = action.get("plugin_key")
+    if plugin_key:
+        return str(plugin_key)
+    path = action.get("path")
+    if path:
+        return _P(path).name
+    title = finding.get("title", "")
+    return title.split()[-1] if title else "?"
