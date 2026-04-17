@@ -64,6 +64,38 @@ def _mcp_attribution(session: SessionSystemBlock, counter: TokenCounter) -> dict
     return per_server
 
 
+def _mcp_entry(
+    name: str,
+    measured: int | None,
+    *,
+    scope: str,
+    extra_note: str | None = None,
+) -> dict[str, Any]:
+    """Build a composition row for a single MCP server.
+
+    ``measured`` is the per-server token cost derived from the latest
+    session's tools array when that array is present; current Claude
+    Code session JSONLs don't carry tool schemas, so this is almost
+    always ``None`` in practice and the row renders as unmeasured with
+    a note explaining why.
+    """
+    if measured is not None:
+        note = extra_note
+    else:
+        base_note = (
+            "schema not in session JSONL; v0.1 does not spawn MCP servers to probe them"
+        )
+        note = f"{base_note}; {extra_note}" if extra_note else base_note
+    return {
+        "source": f"mcp:{name}",
+        "scope": scope,
+        "bytes": None,
+        "tokens": measured,
+        "tokens_source": "session+tiktoken" if measured is not None else "unmeasured",
+        "note": note,
+    }
+
+
 def build_composition(state: InstallationState, counter: TokenCounter) -> list[dict[str, Any]]:
     """Return the composition breakdown, largest first."""
     entries: list[dict[str, Any]] = []
@@ -140,24 +172,48 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
             }
         )
 
-    mcp_servers = gs.config.mcp_servers if gs.config else {}
     session = gs.latest_session
     attribution = _mcp_attribution(session, counter) if session else {}
-    for name in sorted(mcp_servers):
+
+    # Global MCPs: load unconditionally into every session.
+    global_mcp = gs.config.mcp_servers if gs.config else {}
+    for name in sorted(global_mcp):
         measured = attribution.get(name)
+        entries.append(_mcp_entry(name, measured, scope="global"))
+
+    # Project-scoped MCPs: only load when that project is open, but
+    # they still bloat the baseline for users who spend most of their
+    # time in a single project. Collapse identical configs across
+    # projects (name + command + args) so a shared MCP appears once
+    # with the list of projects that declare it.
+    project_groups: dict[tuple[str, str | None, tuple[str, ...]], list[str]] = {}
+    project_attribution: dict[tuple[str, str | None, tuple[str, ...]], int] = {}
+    if gs.config:
+        for project in gs.config.projects.values():
+            for srv_name, srv in project.mcp_servers.items():
+                key = (srv_name, srv.command, srv.args)
+                project_groups.setdefault(key, []).append(str(project.path))
+                m = attribution.get(srv_name)
+                if m is not None and key not in project_attribution:
+                    project_attribution[key] = m
+    for (srv_name, _cmd, _args), project_paths in sorted(project_groups.items()):
+        measured = project_attribution.get((srv_name, _cmd, _args))
+        scope_label = (
+            f"project:{project_paths[0]}"
+            if len(project_paths) == 1
+            else f"project:{len(project_paths)} projects"
+        )
         entries.append(
-            {
-                "source": f"mcp:{name}",
-                "scope": "global",
-                "bytes": None,
-                "tokens": measured if measured is not None else None,
-                "tokens_source": "session+tiktoken" if measured is not None else "unmeasured",
-                "note": (
+            _mcp_entry(
+                srv_name,
+                measured,
+                scope=scope_label,
+                extra_note=(
                     None
-                    if measured is not None
-                    else "no session JSONL found - open this MCP in Claude Code once to measure"
+                    if len(project_paths) == 1
+                    else f"declared in {len(project_paths)} projects"
                 ),
-            }
+            )
         )
 
     def _rank(entry: dict[str, Any]) -> int:

@@ -228,6 +228,49 @@ def test_build_report_emits_dead_mcp_finding_as_json() -> None:
     assert notion_finding["action"]["server_name"] == "notion"
 
 
+def test_build_report_surfaces_project_scoped_mcps_in_composition() -> None:
+    config = ClaudeConfig(
+        mcp_servers={},
+        projects={
+            Path("/tmp/a"): ProjectRecord(
+                path=Path("/tmp/a"),
+                mcp_servers={"polymarket-docs": McpServer(name="polymarket-docs")},
+            ),
+            Path("/tmp/b"): ProjectRecord(
+                path=Path("/tmp/b"),
+                mcp_servers={"Roblox_Studio": McpServer(name="Roblox_Studio")},
+            ),
+        },
+    )
+    state = _make_state(config=config)
+    report = build_report(state)
+    sources = {e["source"] for e in report["composition"]}
+    assert "mcp:polymarket-docs" in sources
+    assert "mcp:Roblox_Studio" in sources
+    poly = next(e for e in report["composition"] if e["source"] == "mcp:polymarket-docs")
+    assert poly["scope"] == "project:/tmp/a"
+    assert poly["tokens_source"] == "unmeasured"
+
+
+def test_build_report_collapses_shared_project_mcps() -> None:
+    # Same MCP name + command + args declared in two projects → one row
+    # labelled "project:2 projects" rather than two separate rows.
+    shared = McpServer(name="shared", command="run", args=("--x",))
+    config = ClaudeConfig(
+        mcp_servers={},
+        projects={
+            Path("/tmp/a"): ProjectRecord(path=Path("/tmp/a"), mcp_servers={"shared": shared}),
+            Path("/tmp/b"): ProjectRecord(path=Path("/tmp/b"), mcp_servers={"shared": shared}),
+        },
+    )
+    state = _make_state(config=config)
+    report = build_report(state)
+    shared_rows = [e for e in report["composition"] if e["source"] == "mcp:shared"]
+    assert len(shared_rows) == 1
+    assert shared_rows[0]["scope"] == "project:2 projects"
+    assert "declared in 2 projects" in (shared_rows[0]["note"] or "")
+
+
 def test_inventory_counts_project_scoped_mcp_servers() -> None:
     config = ClaudeConfig(
         mcp_servers={},
