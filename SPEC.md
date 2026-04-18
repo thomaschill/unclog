@@ -38,7 +38,7 @@ $ unclog
 
  ┌─ Claude installation ────────────────────────────────────────┐
  │                                                              │
- │   42,180  tokens baseline · clogged                          │
+ │   42,180  tokens baseline                                   │
  │                                                              │
  │   ████████ ████ ██████ ███ ██ █                              │
  │   github  notion CLAUDE skills other                         │
@@ -52,9 +52,8 @@ $ unclog
  │                                                              │
  └──────────────────────────────────────────────────────────────┘
 
- Found 8 issues that could save ~12,400 tokens.
+ Found 7 issues that could save ~12,213 tokens.
 
- [global]         Remove skill  fashion-trend-analyst   187 tok · 0 uses 120d
  [global]         Disable MCP   chinese-marketing-mcp   7,840   · 0 uses 94d
  [global]         Remove 3 dead file refs in CLAUDE.md  —       · paths missing
  [project draper] Remove duplicate section from CLAUDE.md 412   · exists globally
@@ -69,7 +68,6 @@ If `y`:
 ```
  Select fixes to apply:
 
- [x] Remove skill  fashion-trend-analyst         187 tok
  [x] Remove 3 dead file refs in global CLAUDE.md  —
  [x] Remove duplicate section in draper CLAUDE.md 412 tok
  [ ] Disable MCP  chinese-marketing-mcp         7,840 tok
@@ -83,16 +81,27 @@ If `y`:
 After confirm:
 
 ```
- Apply 3 changes? [y/N] y
+ Apply 2 changes? [y/N] y
 
  ✓ Snapshot  ~/.claude/.unclog/snapshots/2026-04-17-1842
- ✓ Applied 3 changes
+ ✓ Applied 2 changes
 
-   Baseline: 42,180 → [animated countdown] → 41,589
-   Saved 591 tokens.
+ Review 47 agent(s) + 23 skill(s) one-by-one (~6,188 tok)? [y/N] y
+
+ [curate picker opens — all items unchecked by default]
+ …
+ ✓ Applied 5 changes
+
+   Baseline: 42,180 → [animated countdown] → 40,577
+   Saved 1,603 tokens.
 
  Undo:  unclog restore latest
 ```
+
+The curate picker (see §6.2) is the second, opt-in pass. It addresses
+the 80% case no detector catches: agents and skills the user installed
+and stopped using. v0.1 has no tool-level invocation data, so we
+refuse to guess and hand the list to the user instead.
 
 ### 3.2 Safety principles
 
@@ -109,7 +118,6 @@ unclog                       # scan → report → interactive fix flow
 unclog --report              # scan → report, exit (no prompts)
 unclog --json                # structured output to stdout, no color/animation
 unclog --plain               # ASCII-only, no color, no animation (for CI)
-unclog --dry-run             # prompts run, no files written, no snapshot
 unclog --yes                 # apply pre-checked safe findings, skip all prompts
 unclog --project PATH        # narrow the audit to a single project
 unclog --probe-mcps          # spawn configured MCP servers to measure tools schema (opt-in)
@@ -125,7 +133,7 @@ unclog --version
 
 Rules:
 
-- `--dry-run` and `--yes` are mutually exclusive; `--report` cannot combine with either. `--report | --json` imply no animation and `--plain`-compatible styling.
+- `--report` cannot combine with `--yes`. `--report | --json` imply no animation and `--plain`-compatible styling.
 - `--json` emits a single JSON document, no logs to stdout; diagnostics go to stderr.
 - `NO_COLOR=1` or non-TTY stdout auto-forces `--plain --no-animation`.
 - Default scope is global + every project registered in `~/.claude.json` + the CWD if it looks project-like but isn't registered. `--project PATH` narrows to a single project.
@@ -190,9 +198,6 @@ Each finding is a typed record with: id, scope, title, reason, evidence, token s
 
 | ID | Title | Scope | Auto-check |
 |---|---|---|---|
-| `unused_skill` | Remove skill never invoked | global/project | Yes if 0 uses ≥ 90d |
-| `unused_agent` | Remove agent never invoked | global/project | Yes if 0 uses ≥ 90d |
-| `unused_command` | Remove slash command never invoked | global/project | Yes if 0 uses ≥ 90d |
 | `dead_mcp` | MCP configured but failed to load | global/project | **No** — user may be mid-fix |
 | `unused_mcp` | MCP loaded but never invoked | global/project | **No** — user opts in |
 | `stale_plugin` | Plugin enabled, unused ≥ threshold, or > 90d since install | global | **No** |
@@ -204,7 +209,7 @@ Each finding is a typed record with: id, scope, title, reason, evidence, token s
 | `scope_mismatch_project_to_global` | Identical section across ≥ 3 projects | project → global | **No** |
 | `missing_claudeignore` | No `.claudeignore` in a project with `node_modules`/`.venv` | project | **No** — flag only |
 
-"Uses" are derived from `stats-cache.json` aggregates + `history.jsonl` timestamps in v0.1. Per-tool invocation counts land in v0.2 when we parse full session JSONL.
+v0.1 has no per-tool invocation counts — `stats-cache.json` and `history.jsonl` don't attribute tool calls to the skill/agent/command that handled them. Rather than guess from circumstantial signals, we dropped `unused_skill`/`unused_agent`/`unused_command` detectors entirely and surface those items through the opt-in curate picker (see §6.2). `unused_mcp` stays because MCP tool names are directly attributable to a server. Per-tool invocation counts land in v0.2 when we parse full session JSONL.
 
 **Configurable thresholds** (see §22 for config file). The following have documented defaults that users can override:
 
@@ -214,7 +219,7 @@ Each finding is a typed record with: id, scope, title, reason, evidence, token s
 | Stale plugin window | 90 days | `thresholds.stale_plugin_days` |
 | Scope-mismatch promotion minimum projects | 3 | `thresholds.promote_min_projects` |
 
-Non-configurable in v0.1 (requires code change): oversized-section threshold (`1,000 tokens`), baseline tier thresholds (`20k` / `50k`).
+Non-configurable in v0.1 (requires code change): oversized-section threshold (`1,000 tokens`).
 
 ### 6.1 Actions
 
@@ -231,6 +236,29 @@ Each finding maps to exactly one of these action primitives:
 - `flag_only` — purely informational, no apply action
 
 Every action has a matching `undo` recorded in the snapshot manifest.
+
+### 6.2 Curate picker (opt-in)
+
+Detectors only fire on evidence. For agents and skills, v0.1 has no
+attributable usage data, so instead of guessing we run a second
+opt-in pass after the detector findings prompt closes.
+
+Flow:
+
+1. After the primary picker resolves, if any local agents or skills exist, unclog prompts: `Review N agent(s) + M skill(s) one-by-one (~X,XXX tok)? [y/N]`.
+2. On `y`, the same Rich multiselect picker opens with every local agent and skill enumerated as a row, sorted by token cost descending. Every row is unchecked by default — curate is hand-picked, not auto-applied.
+3. Selected items apply through the same snapshot + primitive path as detector findings.
+
+Scope: `~/.claude/agents/*.md` and `~/.claude/skills/*/SKILL.md`. Plugin-bundled content under `~/.claude/plugins/cache/**` is excluded — that's governed by `disable_plugin` / `uninstall_plugin` and editing files inside a plugin cache reverses on the next marketplace update.
+
+Finding types emitted by the curate builder (never emitted by detectors):
+
+| ID | Title | Scope | Auto-check |
+|---|---|---|---|
+| `agent_inventory` | Agent `<name>` | global | **No** — hand-picked |
+| `skill_inventory` | Skill `<name>` | global | **No** — hand-picked |
+
+`--yes` skips the curate offer entirely. `--yes` is the "apply safe auto-checked findings" mode; curate is always opt-in because no item is safe to auto-apply.
 
 ## 7. CLAUDE.md handling (deep dive)
 
@@ -304,10 +332,10 @@ Project name is derived from the last path segment unless a project config provi
   "unclog_version": "0.1.0",
   "actions": [
     {
-      "finding_id": "unused_skill:fashion-trend-analyst",
+      "finding_id": "skill_inventory:fashion-trend-analyst",
       "action": "delete_file",
-      "original_path": "/Users/tom/.claude/skills/fashion-trend-analyst/SKILL.md",
-      "snapshot_path": "files/home/.claude/skills/fashion-trend-analyst/SKILL.md"
+      "original_path": "/Users/tom/.claude/skills/fashion-trend-analyst",
+      "snapshot_path": "files/home/.claude/skills/fashion-trend-analyst"
     }
   ]
 }
@@ -337,7 +365,6 @@ Spec for `--json`:
   "version": "0.1.0",
   "generated_at": "...",
   "baseline_tokens": 42180,
-  "baseline_tier": "clogged",
   "projects_audited": ["/Users/tom/projects/draper"],
   "composition": [
     {"source": "mcp:github-mcp", "tokens": 18402, "scope": "global"},
@@ -345,15 +372,15 @@ Spec for `--json`:
   ],
   "findings": [
     {
-      "id": "unused_skill:fashion-trend-analyst",
-      "type": "unused_skill",
+      "id": "unused_mcp:chinese-marketing-mcp",
+      "type": "unused_mcp",
       "scope": {"kind": "global"},
-      "title": "Remove skill never invoked",
-      "reason": "0 uses in 120d",
-      "evidence": {"last_used": null, "age_days": 120},
-      "token_savings": 187,
-      "action": {"primitive": "delete_file", "path": "..."},
-      "auto_checked": true
+      "title": "Disable MCP never invoked",
+      "reason": "0 uses in 94d",
+      "evidence": {"last_used": null, "age_days": 94},
+      "token_savings": 7840,
+      "action": {"primitive": "comment_out_mcp", "server_name": "chinese-marketing-mcp"},
+      "auto_checked": false
     }
   ]
 }
@@ -370,13 +397,13 @@ Astral (uv, ruff): restrained monochrome with one accent, typography-first, gene
 | Role | Color | Usage |
 |---|---|---|
 | Accent | teal `#14b8a6` | product name, primary CTAs, baseline highlight |
-| Severity green | `#22c55e` | "lean" baseline, successful apply |
-| Severity amber | `#eab308` | "typical" baseline, stale-plugin warnings |
-| Severity red | `#ef4444` | "clogged" baseline, broken MCPs, dead refs |
+| Success green | `#22c55e` | successful apply, snapshot confirmation |
+| Warning amber | `#eab308` | stale-plugin warnings, dead-ref counts |
+| Danger red | `#ef4444` | broken MCPs, restore failures |
 | Foreground | default terminal | body text |
 | Dim | `#6b7280` | timestamps, paths, metadata |
 
-Accent is used sparingly — the product name, the hero number accent, and the active prompt. Severity colors only on status columns and severity badges. Everything else is default / dim.
+Accent is used sparingly — the product name, the hero number accent, and the active prompt. Status colors only on status columns and badges. Everything else is default / dim. No colour is attached to the baseline number itself — we refuse to label an install "lean" or "clogged" since token budgets are workflow-specific.
 
 ### 11.3 Typography
 
@@ -398,11 +425,7 @@ Appears only on the default interactive flow. Suppressed in `--report`, `--json`
 
 ### 11.5 Hero baseline number
 
-Rendered with `rich.text` at a larger style, comma-formatted, colored by tier:
-
-- `< 20,000` → green, subtitle "lean"
-- `20,000 – 50,000` → amber, subtitle "typical"
-- `> 50,000` → red, subtitle "clogged"
+Rendered with `rich.text`, comma-formatted, accent-teal. No subtitle tier label: token budgets are workflow-specific (a heavy Claude Code power user may legitimately run at 60k+) so we show the raw number and let the user decide. The post-apply countdown (§11.8) is where the number earns its drama.
 
 ### 11.6 Composition treemap
 
@@ -454,10 +477,8 @@ unclog/
     tokens.py              # tiktoken + optional Anthropic API
   findings/
     base.py                # Finding dataclass + action primitives
+    curate.py              # opt-in agent/skill inventory builder (§6.2)
     detectors/             # one module per finding type
-      unused_skill.py
-      unused_agent.py
-      unused_command.py
       dead_mcp.py
       unused_mcp.py
       stale_plugin.py
@@ -474,7 +495,8 @@ unclog/
     wordmark.py
     hero.py                # baseline number + treemap
     findings_view.py       # findings list rendering
-    selector.py            # questionary checkbox flow
+    picker.py              # rich.live multiselect (replaces questionary)
+    interactive.py         # primary picker → curate offer → apply orchestration
     spinner.py             # custom flow spinner
     theme.py               # palette, styles, symbols
     output.py              # mode dispatch (interactive / report / json / plain)
@@ -501,11 +523,15 @@ cli.py
   → app.run()
     → scan.*  ────────────► InstallationState
     → findings.detect(state) ───► list[Finding]
+    → findings.curate.build_curate_findings(state) ───► list[Finding]   (§6.2)
     → ui.output.render(state, findings, mode)
-      (interactive mode) → ui.selector.select(findings)
-        → apply.snapshot(selected)
-        → apply.actions(selected)
-        → ui.output.render_applied(before, after)
+      (interactive mode) → ui.interactive.run_interactive(findings, curate_findings)
+        → ui.picker.run_rich_multiselect(...)         # primary picker
+        → apply.snapshot + apply.actions              # primary apply
+        → confirm curate offer
+        → ui.picker.run_rich_multiselect(curate)      # opt-in curate picker
+        → apply.snapshot + apply.actions              # curate apply
+        → ui.output.render_applied(before, after)     # single cumulative countdown
 ```
 
 `InstallationState` is an immutable dataclass carrying the full parsed world. Findings detectors are pure functions of it. Apply actions are the only code that writes.
@@ -521,7 +547,7 @@ Resolve once at startup. Fall back to `~/.claude/`. All path construction goes t
 | Language | Python 3.11+ | ecosystem fit, token libs, uv distribution |
 | CLI framework | `typer` | type-driven args, clean help output |
 | Rendering | `rich` | tables, trees, panels, live, spinners |
-| Interactive prompts | `questionary` | checkbox flow matches Claude Code UX |
+| Interactive prompts | `readchar` + `rich.live` | truecolor multiselect with live footer; no CPR dependency |
 | Token counting | `tiktoken` default, `anthropic` for `--accurate` | fast default, accurate opt-in |
 | Markdown parsing | `mistune` or built-in splitter | section tree extraction |
 | Packaging | `uv` / `hatch` | `uv tool install unclog` |
