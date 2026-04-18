@@ -7,7 +7,7 @@ from unclog.ui.hero import (
     render_hero,
     render_treemap,
 )
-from unclog.ui.theme import SEVERITY_CLOGGED, SEVERITY_LEAN, SEVERITY_TYPICAL
+from unclog.ui.theme import ACCENT
 from unclog.ui.wordmark import wordmark
 
 
@@ -30,56 +30,38 @@ def _rgb(hex_colour: str) -> str:
     return f"{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}"
 
 
-def test_hero_renders_number_with_tier_label() -> None:
+def test_hero_renders_number_and_provenance() -> None:
     baseline = {
         "estimated_tokens": 42180,
         "tokens_source": "session+tiktoken",
-        "tier": "typical",
         "attributed_tokens": 41000,
         "unmeasured_sources": 0,
     }
     out = _capture(render_hero(baseline))
     assert "42,180" in out
-    assert "typical" in out
     assert "from latest session" in out
 
 
-def test_hero_colours_lean_tier_green() -> None:
+def test_hero_number_uses_accent_colour() -> None:
     baseline = {
         "estimated_tokens": 8000,
         "tokens_source": "tiktoken",
-        "tier": "lean",
         "attributed_tokens": 8000,
         "unmeasured_sources": 0,
     }
     ansi = _capture_ansi(render_hero(baseline))
-    assert _rgb(SEVERITY_LEAN) in ansi
+    assert _rgb(ACCENT) in ansi
 
 
-def test_hero_colours_clogged_tier_red() -> None:
+def test_hero_surfaces_unmeasured_mcp_count() -> None:
     baseline = {
         "estimated_tokens": 80000,
         "tokens_source": "session+tiktoken",
-        "tier": "clogged",
         "attributed_tokens": 70000,
         "unmeasured_sources": 3,
     }
-    ansi = _capture_ansi(render_hero(baseline))
-    assert _rgb(SEVERITY_CLOGGED) in ansi
     plain = _capture(render_hero(baseline))
     assert "3 MCP unmeasured" in plain
-
-
-def test_hero_typical_tier_amber() -> None:
-    baseline = {
-        "estimated_tokens": 30000,
-        "tokens_source": "tiktoken",
-        "tier": "typical",
-        "attributed_tokens": 30000,
-        "unmeasured_sources": 0,
-    }
-    ansi = _capture_ansi(render_hero(baseline))
-    assert _rgb(SEVERITY_TYPICAL) in ansi
 
 
 def test_treemap_renders_segment_labels_for_large_shares() -> None:

@@ -120,27 +120,6 @@ def test_interactive_accepts_and_applies(tmp_path: Path) -> None:
     assert len(result.succeeded) == 1
 
 
-def test_interactive_dry_run_skips_apply(tmp_path: Path) -> None:
-    skill_md = tmp_path / "skills" / "g" / "SKILL.md"
-    skill_md.parent.mkdir(parents=True)
-    skill_md.write_text("body\n", encoding="utf-8")
-    finding = _f("a", "delete_file", path=skill_md)
-    prompter = FakePrompter(
-        confirm_answers=[True],
-        multiselect_answer=[finding],
-    )
-    result = run_interactive(
-        [finding],
-        claude_home=tmp_path,
-        project_paths=(),
-        console=Console(record=True),
-        options=InteractiveOptions(dry_run=True),
-        prompter=prompter,
-    )
-    assert result is None
-    assert skill_md.exists()  # dry-run: file untouched
-
-
 def test_interactive_yes_applies_only_auto_checked(tmp_path: Path) -> None:
     a_md = tmp_path / "skills" / "a" / "SKILL.md"
     a_md.parent.mkdir(parents=True)

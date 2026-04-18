@@ -75,7 +75,6 @@ def test_build_report_schema_fields() -> None:
     assert report["generated_at"] == "2026-04-17T18:42:00Z"
     assert report["claude_home"] == "/fake/.claude"
     assert report["baseline"]["tokens_source"] in {"tiktoken", "session+tiktoken"}
-    assert report["baseline"]["tier"] in {"lean", "typical", "clogged"}
     assert report["findings"] == []
 
 

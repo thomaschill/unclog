@@ -70,11 +70,6 @@ def root(
         "--report",
         help="Scan and report, then exit without running the interactive fix flow.",
     ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Run the interactive flow without writing files or creating a snapshot.",
-    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -110,15 +105,13 @@ def root(
     The default mode prints the report, then (if findings exist and
     stdout is a TTY) walks through the interactive fix selector.
     ``--report``, ``--json``, and ``--plain`` all suppress the fix
-    flow. ``--dry-run`` runs prompts but writes nothing; ``--yes``
-    skips prompts and applies auto-checked findings only.
+    flow. ``--yes`` skips prompts and applies auto-checked findings
+    only.
     """
     if ctx.invoked_subcommand is not None:
         return
-    if dry_run and yes:
-        raise typer.BadParameter("--dry-run and --yes are mutually exclusive")
-    if report_only and (dry_run or yes):
-        raise typer.BadParameter("--report cannot be combined with --dry-run or --yes")
+    if report_only and yes:
+        raise typer.BadParameter("--report cannot be combined with --yes")
 
     display = DisplayOptions.resolve(
         as_json=as_json,
@@ -153,7 +146,6 @@ def root(
     _launch_interactive(
         state,
         console=console,
-        dry_run=dry_run,
         yes=yes,
         no_animation=no_animation,
     )
@@ -163,7 +155,6 @@ def _launch_interactive(
     state: InstallationState,
     *,
     console: Console,
-    dry_run: bool,
     yes: bool,
     no_animation: bool,
 ) -> None:
@@ -187,7 +178,6 @@ def _launch_interactive(
         project_paths=project_paths,
         console=console,
         options=InteractiveOptions(
-            dry_run=dry_run,
             yes=yes,
             no_animation=no_animation,
         ),

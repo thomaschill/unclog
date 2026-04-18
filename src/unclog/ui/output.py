@@ -32,9 +32,9 @@ from unclog.findings import load_thresholds
 from unclog.findings.base import Finding
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.tokens import TiktokenCounter, TokenCounter
-from unclog.state import InstallationState, tier_for_baseline
+from unclog.state import InstallationState
 from unclog.ui.hero import render_hero, render_treemap
-from unclog.ui.theme import ACCENT, DIM, SEVERITY_LEAN
+from unclog.ui.theme import ACCENT, DIM, SEVERITY_OK
 from unclog.ui.wordmark import wordmark
 from unclog.util.paths import ClaudePaths
 
@@ -380,7 +380,6 @@ def _baseline(
         "estimated_tokens": total,
         "attributed_tokens": attributed_tokens,
         "tokens_source": tokens_source,
-        "tier": tier_for_baseline(total),
         "unmeasured_sources": unmeasured_sources,
         "session_path": str(session.session_path) if session else None,
     }
@@ -729,13 +728,13 @@ def render_plain(state: InstallationState) -> str:
     """ASCII-only, colour-free text render. Used for ``--plain`` and non-TTY."""
     report = build_report(state)
     lines: list[str] = []
-    lines.append(f"unclog {report['unclog_version']}  |  schema {report['schema']}")
+    lines.append(f"unclog {report['unclog_version']}")
     lines.append(f"claude_home: {report['claude_home']}")
     lines.append("")
     baseline = report["baseline"]
     lines.append(
         f"baseline: ~{baseline['estimated_tokens']:,} tokens  "
-        f"[{baseline['tier']}]  ({baseline['tokens_source']})"
+        f"({baseline['tokens_source']})"
     )
     if baseline.get("unmeasured_sources"):
         lines.append(
@@ -751,13 +750,6 @@ def render_plain(state: InstallationState) -> str:
         f"{_mcp_label(inv)} | {_hooks_label(inv)} | "
         f"{inv['projects_known']} known projects"
     )
-    if report["projects_audited"]:
-        lines.append("")
-        lines.append("projects audited:")
-        for project in report["projects_audited"]:
-            missing = " (missing)" if not project["exists"] else ""
-            ci = " .claudeignore" if project["has_claudeignore"] else ""
-            lines.append(f"  - {project['name']}{missing}{ci}  {project['path']}")
     if report["composition"]:
         lines.append("")
         lines.append("composition (largest first):")
@@ -908,7 +900,7 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
     """
     console.print("")
     if not findings:
-        console.print(f"[{SEVERITY_LEAN}]✓[/{SEVERITY_LEAN}] [dim]No issues found.[/dim]")
+        console.print(f"[{SEVERITY_OK}]✓[/{SEVERITY_OK}] [dim]No issues found.[/dim]")
         return
 
     removable = [f for f in findings if f.get("action", {}).get("primitive") != "flag_only"]
@@ -920,7 +912,7 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
     summary.append(" issue(s)", style=DIM)
     if removable:
         summary.append("  ·  ", style=DIM)
-        summary.append(f"{len(removable)}", style=f"bold {SEVERITY_LEAN}")
+        summary.append(f"{len(removable)}", style=f"bold {SEVERITY_OK}")
         summary.append(" removable", style=DIM)
         if removable_tokens:
             summary.append(f" (~{removable_tokens:,} tok)", style=DIM)

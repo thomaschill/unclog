@@ -14,8 +14,6 @@ Safety defaults (spec §3.2):
 - The apply confirm defaults to No — mashing enter exits cleanly.
 - Findings start unchecked regardless of detector ``auto_checked``;
   the bulk ``A``/``a``/``n`` keybinds cover the sweep case.
-- ``--dry-run`` short-circuits right before apply: the user sees the
-  plan, no snapshot is created, no files change.
 - ``--yes`` skips the picker and applies every auto-checked finding.
   Opt-in findings are silently *excluded* — consent is still required
   for them even in yes-mode.
@@ -37,7 +35,7 @@ from unclog.findings.base import Finding
 from unclog.ui.countdown import animate_countdown
 from unclog.ui.picker import run_rich_multiselect
 from unclog.ui.share import render_share_stat
-from unclog.ui.theme import ACCENT, DIM, SEVERITY_CLOGGED, SEVERITY_LEAN
+from unclog.ui.theme import ACCENT, DIM, SEVERITY_BAD, SEVERITY_OK
 from unclog.util.paths import ClaudePaths
 
 
@@ -95,13 +93,11 @@ class RichPrompter:
 class InteractiveOptions:
     """Runtime knobs for :func:`run_interactive`.
 
-    - ``dry_run``: prompts still run, but the apply phase is skipped.
     - ``yes``: no prompts; apply every auto-checked finding.
     - ``no_animation``: reserved for M6 polish; accepted now so CLI
       plumbing stabilises.
     """
 
-    dry_run: bool = False
     yes: bool = False
     no_animation: bool = False
 
@@ -119,8 +115,8 @@ def run_interactive(
     """Run the interactive fix flow. Returns the apply result, or None.
 
     ``None`` means the user exited before apply (said No to either
-    prompt, deselected everything, or we're in dry-run mode). Callers
-    should treat ``None`` as "no mutations happened."
+    prompt or deselected everything). Callers should treat ``None``
+    as "no mutations happened."
     """
     if not findings:
         return None
@@ -140,7 +136,6 @@ def run_interactive(
             claude_home=claude_home,
             project_paths=project_paths,
             console=console,
-            dry_run=options.dry_run,
             animate=not options.no_animation,
             baseline_tokens=baseline_tokens,
         )
@@ -180,7 +175,6 @@ def run_interactive(
         claude_home=claude_home,
         project_paths=project_paths,
         console=console,
-        dry_run=options.dry_run,
         animate=not options.no_animation,
         baseline_tokens=baseline_tokens,
     )
@@ -192,15 +186,9 @@ def _execute(
     claude_home: Path,
     project_paths: tuple[Path, ...],
     console: Console,
-    dry_run: bool,
     animate: bool,
     baseline_tokens: int | None,
 ) -> ApplyResult | None:
-    if dry_run:
-        console.print(f"[dim]--dry-run: would apply {len(findings)} change(s).[/dim]")
-        for f in findings:
-            console.print(f"  [dim]-[/dim] {f.title}")
-        return None
     paths = ClaudePaths(home=claude_home)
     result = apply_findings(
         findings,
@@ -231,11 +219,11 @@ def _render_result(result: ApplyResult, console: Console) -> None:
     lines: list[Text] = []
 
     applied = Text()
-    applied.append("✓ ", style=f"bold {SEVERITY_LEAN}")
+    applied.append("✓ ", style=f"bold {SEVERITY_OK}")
     applied.append(f"Applied {len(result.succeeded)} change(s)", style="default")
     if result.token_savings:
         applied.append("   ·   ", style=DIM)
-        applied.append(f"~{result.token_savings:,}", style=f"bold {SEVERITY_LEAN}")
+        applied.append(f"~{result.token_savings:,}", style=f"bold {SEVERITY_OK}")
         applied.append(" tokens saved", style=DIM)
     lines.append(applied)
 
@@ -243,7 +231,7 @@ def _render_result(result: ApplyResult, console: Console) -> None:
         lines.append(Text(""))
         for finding, _ in result.succeeded:
             row = Text()
-            row.append("  ✓ ", style=SEVERITY_LEAN)
+            row.append("  ✓ ", style=SEVERITY_OK)
             savings = finding.token_savings
             if savings is not None:
                 row.append(f"{savings:>6,} tok  ", style=DIM)
@@ -261,8 +249,8 @@ def _render_result(result: ApplyResult, console: Console) -> None:
     if result.failed:
         lines.append(Text(""))
         fail_header = Text()
-        fail_header.append("! ", style=f"bold {SEVERITY_CLOGGED}")
-        fail_header.append(f"{len(result.failed)} action(s) failed", style=SEVERITY_CLOGGED)
+        fail_header.append("! ", style=f"bold {SEVERITY_BAD}")
+        fail_header.append(f"{len(result.failed)} action(s) failed", style=SEVERITY_BAD)
         lines.append(fail_header)
         for finding, reason in result.failed:
             row = Text()
@@ -277,7 +265,7 @@ def _render_result(result: ApplyResult, console: Console) -> None:
     undo_line.append(f"unclog restore {result.snapshot.id}", style=f"bold {ACCENT}")
     lines.append(undo_line)
 
-    border = SEVERITY_CLOGGED if result.failed else SEVERITY_LEAN
+    border = SEVERITY_BAD if result.failed else SEVERITY_OK
     console.print(
         Panel(
             Text("\n").join(lines),

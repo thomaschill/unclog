@@ -17,8 +17,7 @@ from typing import Any
 from rich.console import RenderableType
 from rich.text import Text
 
-from unclog.state import BaselineTier
-from unclog.ui.theme import DIM, gradient_colour, tier_style
+from unclog.ui.theme import ACCENT, DIM, gradient_colour
 
 # Kept for API stability; the stacked-bar treemap was removed but callers
 # still pass ``width`` for historical reasons.
@@ -50,16 +49,13 @@ def _provenance(baseline: dict[str, Any]) -> str:
 
 
 def render_hero(baseline: dict[str, Any]) -> RenderableType:
-    """Return the hero block: one dense line with number, tier, and provenance."""
+    """Return the hero block: one dense line with number and provenance."""
     tokens = int(baseline.get("estimated_tokens") or 0)
-    tier: BaselineTier = baseline.get("tier", "lean")
-    style = tier_style(tier)
 
     line = Text()
-    line.append(f"{tokens:,}", style=f"bold {style.colour}")
+    line.append(f"{tokens:,}", style=f"bold {ACCENT}")
     line.append(" tokens  ", style=DIM)
-    line.append(style.label, style=style.colour)
-    line.append("   ·   ", style=DIM)
+    line.append("·  ", style=DIM)
     line.append(_provenance(baseline), style=DIM)
     return line
 
