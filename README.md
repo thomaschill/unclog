@@ -53,7 +53,6 @@ unclog --plain               # ASCII-only, CI-safe
 ## Guarantees
 
 - **Local-only.** Every measurement runs in-process via `tiktoken`. No telemetry, no accounts, no network.
-- **Read-only until you confirm.** MCP servers are not spawned unless you pass `--probe-mcps`.
 - **Reversible.** Every apply pass writes a full snapshot first.
 - **No background processes.** `unclog` runs, prints, optionally applies, exits.
 
