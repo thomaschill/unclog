@@ -94,6 +94,16 @@ def root(
             "with token counts, then exit. Diagnostic for verifying scan coverage."
         ),
     ),
+    probe_mcps: bool = typer.Option(
+        False,
+        "--probe-mcps",
+        help=(
+            "Opt-in: spawn every declared MCP server via stdio JSON-RPC to "
+            "measure its real tools-schema size and surface startup failures. "
+            "Serial, 5s per server, minimal-env. Off by default — the scan "
+            "is otherwise fully read-only."
+        ),
+    ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
 
@@ -119,7 +129,7 @@ def root(
 
     console = Console(no_color=not display.colour)
 
-    state = run_scan(project=project)
+    state = run_scan(project=project, probe_mcps=probe_mcps)
 
     if list_claude_md:
         if display.plain:

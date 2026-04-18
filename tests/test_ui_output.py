@@ -41,7 +41,10 @@ def _make_state(
     latest_session: SessionSystemBlock | None = None,
     activity: ActivityIndex | None = None,
     project_scopes: tuple = (),
+    mcp_probes: dict | None = None,  # type: ignore[type-arg]
 ) -> InstallationState:
+    from types import MappingProxyType
+
     home = Path("/fake/.claude")
     return InstallationState(
         generated_at=datetime(2026, 4, 17, 18, 42, tzinfo=UTC),
@@ -58,6 +61,7 @@ def _make_state(
             agents=agents,
             latest_session=latest_session,
             activity=activity if activity is not None else ActivityIndex(),
+            mcp_probes=MappingProxyType(mcp_probes or {}),
         ),
         project_scopes=project_scopes,
         warnings=warnings,
@@ -123,6 +127,40 @@ def test_build_report_attributes_mcp_from_session_tools() -> None:
     assert notion["tokens"] is None
     assert report["baseline"]["tokens_source"] == "session+tiktoken"
     assert report["baseline"]["estimated_tokens"] == session.total_tokens
+
+
+def test_build_report_uses_probe_tokens_when_probe_ok() -> None:
+    """When --probe-mcps ran, composition rows carry probe+tiktoken tokens."""
+    from unclog.scan.mcp_probe import ProbeResult
+
+    config = ClaudeConfig(mcp_servers={"github": McpServer(name="github")})
+    probes = {"github": ProbeResult(name="github", ok=True, tool_count=5, tools_tokens=1234)}
+    state = _make_state(config=config, mcp_probes=probes)
+    report = build_report(state)
+    github = next(e for e in report["composition"] if e["source"] == "mcp:github")
+    assert github["tokens_source"] == "probe+tiktoken"
+    assert github["tokens"] == 1234
+
+
+def test_build_report_probe_failure_renders_unmeasured_with_note() -> None:
+    """A failed probe keeps the composition row unmeasured, but notes the failure."""
+    from unclog.scan.mcp_probe import ProbeResult
+
+    config = ClaudeConfig(mcp_servers={"bad": McpServer(name="bad")})
+    probes = {
+        "bad": ProbeResult(
+            name="bad",
+            ok=False,
+            error="command not found: bad-server",
+            stderr_tail="bad-server: not found",
+        ),
+    }
+    state = _make_state(config=config, mcp_probes=probes)
+    report = build_report(state)
+    row = next(e for e in report["composition"] if e["source"] == "mcp:bad")
+    assert row["tokens_source"] == "unmeasured"
+    assert row["tokens"] is None
+    assert "probe failed" in row["note"]
 
 
 def test_render_json_is_valid_json_with_stable_keys() -> None:

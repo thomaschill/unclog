@@ -29,6 +29,7 @@ def _state(
     latest_session: SessionSystemBlock | None = None,
     activity: ActivityIndex | None = None,
     mcp_invocations: dict[str, int] | None = None,
+    mcp_probes: dict | None = None,  # type: ignore[type-arg]
     project_scopes: tuple = (),
 ) -> InstallationState:
     return InstallationState(
@@ -49,6 +50,7 @@ def _state(
             latest_session=latest_session,
             activity=activity if activity is not None else ActivityIndex(),
             mcp_invocations=MappingProxyType(mcp_invocations or {}),
+            mcp_probes=MappingProxyType(mcp_probes or {}),
         ),
         project_scopes=project_scopes,
     )
@@ -250,6 +252,64 @@ def test_dead_mcp_flags_configured_but_absent_from_session() -> None:
 def test_dead_mcp_skipped_when_no_session() -> None:
     config = ClaudeConfig(mcp_servers=MappingProxyType({"github": McpServer(name="github")}))
     state = _state(config=config, latest_session=None, activity=_active_index())
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    assert [f for f in findings if f.type == "dead_mcp"] == []
+
+
+def test_dead_mcp_uses_probe_results_when_present() -> None:
+    """When --probe-mcps ran, failed probes become dead_mcp regardless of session."""
+    from unclog.scan.mcp_probe import ProbeResult
+
+    config = ClaudeConfig(
+        mcp_servers=MappingProxyType(
+            {
+                "healthy": McpServer(name="healthy"),
+                "broken": McpServer(name="broken"),
+            }
+        )
+    )
+    probes = {
+        "healthy": ProbeResult(name="healthy", ok=True, tool_count=3, tools_tokens=900),
+        "broken": ProbeResult(
+            name="broken",
+            ok=False,
+            error="command not found: broken-server",
+            stderr_tail="sh: broken-server: command not found",
+        ),
+    }
+    # No session: would yield nothing via fallback, but probe path kicks in.
+    state = _state(
+        config=config,
+        latest_session=None,
+        activity=_active_index(),
+        mcp_probes=probes,
+    )
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    dead = [f for f in findings if f.type == "dead_mcp"]
+    assert [f.id for f in dead] == ["dead_mcp:broken"]
+    assert dead[0].evidence["source"] == "probe"
+    assert "command not found" in dead[0].reason
+    assert "broken-server" in dead[0].evidence["stderr_tail"]
+
+
+def test_dead_mcp_probe_success_suppresses_session_fallback() -> None:
+    """Probe-ok servers must NOT be flagged dead even if the last session didn't use them."""
+    from unclog.scan.mcp_probe import ProbeResult
+
+    config = ClaudeConfig(
+        mcp_servers=MappingProxyType({"github": McpServer(name="github")})
+    )
+    # Session shows only Read, not github — session-only path would flag it.
+    session = _session_with_tools("Read")
+    probes = {
+        "github": ProbeResult(name="github", ok=True, tool_count=2, tools_tokens=500),
+    }
+    state = _state(
+        config=config,
+        latest_session=session,
+        activity=_active_index(),
+        mcp_probes=probes,
+    )
     findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "dead_mcp"] == []
 

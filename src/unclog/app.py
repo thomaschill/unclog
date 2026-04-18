@@ -7,11 +7,18 @@ consume the returned state as a pure value.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 
-from unclog.scan.config import ConfigParseError, Settings, load_claude_config, load_settings
+from unclog.scan.config import (
+    ConfigParseError,
+    McpServer,
+    Settings,
+    load_claude_config,
+    load_settings,
+)
 from unclog.scan.filesystem import (
     InstalledPlugin,
     PluginContent,
@@ -21,6 +28,7 @@ from unclog.scan.filesystem import (
     enumerate_skills,
     load_installed_plugins,
 )
+from unclog.scan.mcp_probe import probe_all
 from unclog.scan.project import ProjectScope, resolve_project_paths, scan_project
 from unclog.scan.session import (
     SessionSystemBlock,
@@ -205,8 +213,14 @@ def run_scan(
     *,
     project: Path | None = None,
     cwd: Path | None = None,
+    probe_mcps: bool = False,
 ) -> InstallationState:
-    """Run a full scan using the environment's Claude home."""
+    """Run a full scan using the environment's Claude home.
+
+    ``probe_mcps=True`` opts into spawning every declared MCP server
+    via stdio JSON-RPC to measure its tools schema directly. Default
+    off: the scan stays fully read-only unless the caller asks for it.
+    """
     paths = claude_paths()
     warnings: list[str] = []
     if not paths.home.exists():
@@ -219,6 +233,19 @@ def run_scan(
         cwd=cwd_resolved,
         warnings=warnings,
     )
+
+    if probe_mcps and scope.config is not None:
+        servers_to_probe: dict[str, McpServer] = dict(scope.config.mcp_servers)
+        # Also probe project-scoped servers. First config wins on name
+        # collisions — same-named servers with different commands across
+        # projects are rare; probing one is better than probing neither.
+        for project_record in scope.config.projects.values():
+            for srv_name, srv in project_record.mcp_servers.items():
+                servers_to_probe.setdefault(srv_name, srv)
+        if servers_to_probe:
+            probes = probe_all(servers_to_probe)
+            scope = replace(scope, mcp_probes=probes)
+
     return InstallationState(
         generated_at=datetime.now(tz=UTC),
         claude_home=paths.home,

@@ -90,29 +90,50 @@ def _mcp_entry(
     measured: int | None,
     *,
     scope: str,
+    probed: int | None = None,
+    probe_failed: bool = False,
     extra_note: str | None = None,
 ) -> dict[str, Any]:
     """Build a composition row for a single MCP server.
 
-    ``measured`` is the per-server token cost derived from the latest
-    session's tools array when that array is present; current Claude
-    Code session JSONLs don't carry tool schemas, so this is almost
-    always ``None`` in practice and the row renders as unmeasured with
-    a note explaining why.
+    Three token sources, ranked by authority:
+
+    - ``probed``: ``--probe-mcps`` spawned the server and counted its
+      tools schema directly. Most accurate; render as ``probe+tiktoken``.
+    - ``measured``: per-server cost derived from the latest session's
+      tools array. Current Claude Code session JSONLs rarely carry
+      schemas, so this is usually ``None`` in practice.
+    - Neither: ``unmeasured``. Fallback.
+
+    ``probe_failed`` documents that the probe ran but the server
+    couldn't start — the composition still renders as ``unmeasured``
+    (there's no schema to measure) but the note makes it clear the
+    server is broken, not merely unseen.
     """
-    if measured is not None:
+    if probed is not None:
         note = extra_note
+        tokens_source = "probe+tiktoken"
+        tokens: int | None = probed
+    elif measured is not None:
+        note = extra_note
+        tokens_source = "session+tiktoken"
+        tokens = measured
     else:
-        base_note = (
-            "schema not in session JSONL; v0.1 does not spawn MCP servers to probe them"
-        )
+        if probe_failed:
+            base_note = "probe failed — see findings for stderr"
+        else:
+            base_note = (
+                "schema not in session JSONL; run with --probe-mcps to measure live"
+            )
         note = f"{base_note}; {extra_note}" if extra_note else base_note
+        tokens_source = "unmeasured"
+        tokens = None
     return {
         "source": f"mcp:{name}",
         "scope": scope,
         "bytes": None,
-        "tokens": measured,
-        "tokens_source": "session+tiktoken" if measured is not None else "unmeasured",
+        "tokens": tokens,
+        "tokens_source": tokens_source,
         "note": note,
     }
 
@@ -216,9 +237,21 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
 
     # Global MCPs: load unconditionally into every session.
     global_mcp = gs.config.mcp_servers if gs.config else {}
+    probes = gs.mcp_probes
     for name in sorted(global_mcp):
         measured = attribution.get(name)
-        entries.append(_mcp_entry(name, measured, scope="global"))
+        probe = probes.get(name) if probes else None
+        probed = probe.tools_tokens if probe is not None and probe.ok else None
+        probe_failed = probe is not None and not probe.ok
+        entries.append(
+            _mcp_entry(
+                name,
+                measured,
+                scope="global",
+                probed=probed,
+                probe_failed=probe_failed,
+            )
+        )
 
     # Project-scoped MCPs: only load when that project is open, but
     # they still bloat the baseline for users who spend most of their
@@ -237,6 +270,9 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
                     project_attribution[key] = m
     for (srv_name, _cmd, _args), project_paths in sorted(project_groups.items()):
         measured = project_attribution.get((srv_name, _cmd, _args))
+        probe = probes.get(srv_name) if probes else None
+        probed = probe.tools_tokens if probe is not None and probe.ok else None
+        probe_failed = probe is not None and not probe.ok
         scope_label = (
             f"project:{project_paths[0]}"
             if len(project_paths) == 1
@@ -247,6 +283,8 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
                 srv_name,
                 measured,
                 scope=scope_label,
+                probed=probed,
+                probe_failed=probe_failed,
                 extra_note=(
                     None
                     if len(project_paths) == 1
@@ -371,7 +409,7 @@ def build_report(state: InstallationState) -> dict[str, Any]:
     composition = build_composition(state, counter)
     session = state.global_scope.latest_session
     findings = _load_findings(state)
-    return {
+    report: dict[str, Any] = {
         "schema": SCHEMA_ID,
         "unclog_version": __version__,
         "generated_at": state.generated_at.isoformat().replace("+00:00", "Z"),
@@ -383,6 +421,10 @@ def build_report(state: InstallationState) -> dict[str, Any]:
         "warnings": list(state.warnings),
         "projects_audited": _projects_audited(state),
     }
+    probes = state.global_scope.mcp_probes
+    if probes:
+        report["mcp_probes"] = [probes[name].to_json() for name in sorted(probes)]
+    return report
 
 
 def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:

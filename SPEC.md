@@ -112,6 +112,7 @@ unclog --plain               # ASCII-only, no color, no animation (for CI)
 unclog --dry-run             # prompts run, no files written, no snapshot
 unclog --yes                 # apply pre-checked safe findings, skip all prompts
 unclog --project PATH        # narrow the audit to a single project
+unclog --probe-mcps          # spawn configured MCP servers to measure tools schema (opt-in)
 unclog --no-animation        # disable post-apply countdown; keeps color
 
 unclog restore               # list snapshots
@@ -180,7 +181,7 @@ This is the single load-bearing technical read. From `~/.claude/projects/<encode
 Rules:
 
 - If no session JSONL exists for a project, mark MCP + skill costs as `unknown` and fall back to estimating from config (count skill descriptions, flag MCPs as "size not measured").
-- Never spawn MCP servers to measure them in v0.1.
+- Never spawn MCP servers by default. `--probe-mcps` opts into a minimal stdio JSON-RPC probe (initialize → tools/list) with a 5s/server timeout, serial execution, and a whitelisted env (PATH/HOME/TMPDIR/USERPROFILE/SystemRoot/LANG/LC_ALL/LC_CTYPE, plus the server's declared env). Probe-measured tokens use the same tiktoken counter as session-measured ones.
 - Parser must tolerate unknown fields and malformed lines. Skip, don't crash.
 
 ## 6. Finding types
