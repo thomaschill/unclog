@@ -1,6 +1,6 @@
 # unclog
 
-**Every MCP, skill, hook, and CLAUDE.md line you've installed is charging you on every turn.** `unclog` scans your Claude Code install, measures the bloat with tiktoken, and offers a reversible fix flow. One command. No network. No accounts.
+**Every MCP, skill, hook, and CLAUDE.md line you've installed is charging you on every turn.** `unclog` scans your Claude Code install, measures the bloat, and offers a reversible fix.
 
 ```
 uv tool install unclog
