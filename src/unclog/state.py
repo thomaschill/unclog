@@ -38,6 +38,14 @@ class GlobalScope:
     installed_plugins: tuple[InstalledPlugin, ...] = ()
     plugin_content: tuple[PluginContent, ...] = ()
     latest_session: SessionSystemBlock | None = None
+    # Path to the most recent session JSONL found across all project
+    # session directories, or ``None`` when no JSONL exists anywhere.
+    # Independent of ``latest_session`` — modern Claude Code JSONLs no
+    # longer carry a parseable system block (see
+    # ``unclog.scan.session`` module docstring), so the welcome-panel
+    # "session" row reads this path + its mtime rather than relying on
+    # the (usually empty) ``SessionSystemBlock``.
+    latest_session_path: Path | None = None
     activity: ActivityIndex = field(default_factory=ActivityIndex)
     # Per-MCP-server invocation count, aggregated across the latest session
     # of every project. Zero (or absent) means "never invoked" in the

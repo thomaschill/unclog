@@ -12,6 +12,7 @@ display them.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from rich.console import Group, RenderableType
@@ -23,6 +24,19 @@ from unclog.ui.theme import ACCENT, DIM, gradient_colour
 # Kept for API stability; the stacked-bar treemap was removed but callers
 # still pass ``width`` for historical reasons.
 DEFAULT_TREEMAP_WIDTH = 76
+
+# Pre-compiled regexes that translate the machine-readable ``source``
+# strings from :func:`unclog.ui.output.build_composition` into the
+# constituent parts we need for a human-friendly row label. JSON /
+# --plain output still carry the raw ``source`` — this is display-layer
+# only.
+_PLUGIN_SOURCE_RE = re.compile(
+    r"^plugin:(?P<key>[^:]+):bundled \(n_skills=(?P<skills>\d+), n_agents=(?P<agents>\d+)\)$"
+)
+_SKILL_SOURCE_RE = re.compile(r"^skills:descriptions \(n=(?P<n>\d+)\)$")
+_AGENT_SOURCE_RE = re.compile(r"^agents:descriptions \(n=(?P<n>\d+)\)$")
+_MEMORY_SOURCE_RE = re.compile(r"^auto-memory \(n=(?P<n>\d+)\)$")
+_MCP_SOURCE_RE = re.compile(r"^mcp:(?P<name>.+)$")
 
 
 def render_hero(baseline: dict[str, Any]) -> RenderableType:
@@ -72,7 +86,7 @@ def render_treemap(
             legend.append("\n")
         legend.append("■ ", style=colour)
         legend.append(f"{int(entry['tokens']):>6,} tok  ", style=DIM)
-        legend.append(str(entry["source"]), style="default")
+        _append_composition_label(legend, entry)
         # Project-scoped rows (MCPs, etc.) only load inside that project —
         # surface the scope inline so the user doesn't mistake a per-project
         # cost for a global baseline contributor.
@@ -86,6 +100,65 @@ def render_treemap(
         legend.append("\n")
         legend.append(f"  +{hidden} more  {hidden_total:,} tok", style=DIM)
     return legend
+
+
+def _append_composition_label(text: Text, entry: dict[str, Any]) -> None:
+    """Append a human-friendly label for ``entry`` to ``text``.
+
+    Translates the machine-readable ``source`` strings produced by
+    :func:`unclog.ui.output.build_composition` into lay-reader labels:
+
+    - ``skills:descriptions (n=22)`` → ``22 skills``
+    - ``agents:descriptions (n=156)`` → ``156 agents``
+    - ``plugin:foo@bar:bundled (n_skills=18, n_agents=1)`` →
+      ``plugin foo  18 skills · 1 agent``
+    - ``auto-memory (n=6)`` → ``auto-memory  6 files``
+    - ``mcp:name`` → ``mcp name``
+    - anything else → the raw source
+
+    The count term is rendered bold so it sits on the same visual rail as
+    the token count; trailing breakdown info is DIM. JSON / --plain
+    output are untouched — this is a render-time pretty-print.
+    """
+    source = str(entry.get("source", ""))
+
+    if m := _SKILL_SOURCE_RE.match(source):
+        text.append(m["n"], style="bold default")
+        text.append(" skills", style=DIM)
+        return
+    if m := _AGENT_SOURCE_RE.match(source):
+        text.append(m["n"], style="bold default")
+        text.append(" agents", style=DIM)
+        return
+    if m := _MEMORY_SOURCE_RE.match(source):
+        text.append("auto-memory", style="default")
+        text.append("  ", style=DIM)
+        text.append(m["n"], style="bold default")
+        text.append(" files", style=DIM)
+        return
+    if m := _PLUGIN_SOURCE_RE.match(source):
+        # Strip the ``@marketplace`` suffix for display — it's noisy
+        # (the only marketplace most users have is the plugin's own key)
+        # and disambiguation stays in the raw ``source`` for JSON output.
+        name = m["key"].split("@", 1)[0]
+        skills = int(m["skills"])
+        agents = int(m["agents"])
+        text.append("plugin ", style=DIM)
+        text.append(name, style="default")
+        parts: list[str] = []
+        if skills:
+            parts.append(f"{skills} skill{'s' if skills != 1 else ''}")
+        if agents:
+            parts.append(f"{agents} agent{'s' if agents != 1 else ''}")
+        if parts:
+            text.append(f"  {' · '.join(parts)}", style=DIM)
+        return
+    if m := _MCP_SOURCE_RE.match(source):
+        text.append("mcp ", style=DIM)
+        text.append(m["name"], style="default")
+        return
+
+    text.append(source, style="default")
 
 
 def render_baseline_panel(

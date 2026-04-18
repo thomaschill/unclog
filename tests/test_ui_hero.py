@@ -8,7 +8,6 @@ from unclog.ui.hero import (
     render_treemap,
 )
 from unclog.ui.theme import ACCENT
-from unclog.ui.wordmark import wordmark
 
 
 def _capture(renderable: object) -> str:
@@ -85,8 +84,11 @@ def test_treemap_renders_segment_labels_for_large_shares() -> None:
         {"source": "skills:descriptions (n=22)", "tokens": 800},
     ]
     out = _capture(render_treemap(composition, width=DEFAULT_TREEMAP_WIDTH))
-    # Largest segment (>= 12%) should carry an inline label.
-    assert "mcp:github" in out
+    # Display-layer translates ``mcp:<name>`` to ``mcp <name>`` for
+    # readability; machine-readable ``source`` stays intact in JSON.
+    assert "mcp github" in out
+    # ``skills:descriptions (n=22)`` → ``22 skills`` in the friendly label.
+    assert "22 skills" in out
     # Legend shows exact counts for all entries.
     assert "8,000 tok" in out
     assert "1,200 tok" in out
@@ -99,8 +101,8 @@ def test_treemap_skips_unmeasured_entries() -> None:
         {"source": "mcp:notion", "tokens": None},
     ]
     out = _capture(render_treemap(composition))
-    assert "mcp:github" in out
-    assert "mcp:notion" not in out
+    assert "mcp github" in out
+    assert "notion" not in out
 
 
 def test_treemap_empty_when_nothing_measurable() -> None:
@@ -108,9 +110,6 @@ def test_treemap_empty_when_nothing_measurable() -> None:
     assert "no measurable composition" in out
 
 
-def test_wordmark_includes_product_name() -> None:
-    """Wordmark is name-only — version/subtitle removed in the UX trim."""
-    out = _capture(wordmark())
-    assert "unclog" in out
-    # Regression: no subtitle chrome.
-    assert "local-only audit" not in out
+
+
+

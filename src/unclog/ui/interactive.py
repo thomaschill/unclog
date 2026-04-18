@@ -26,17 +26,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from rich.console import Console
-from rich.panel import Panel
+from rich.console import Console, Group
+from rich.table import Table
 from rich.text import Text
 
 from unclog.apply.runner import ApplyResult, apply_findings
 from unclog.findings.base import Finding
+from unclog.ui.chrome import rounded_panel, status_glyph
 from unclog.ui.countdown import animate_countdown
 from unclog.ui.picker import run_rich_multiselect
 from unclog.ui.share import render_share_stat
 from unclog.ui.theme import ACCENT, DIM, SEVERITY_BAD, SEVERITY_OK
 from unclog.util.paths import ClaudePaths
+
+# Same connector used in the scan report to anchor nested child rows
+# to their parent headline.
+_CONNECTOR = "⎿"
 
 
 class Prompter(Protocol):
@@ -45,7 +50,12 @@ class Prompter(Protocol):
     def confirm(self, message: str, default: bool) -> bool: ...
 
     def multiselect(
-        self, message: str, choices: list[tuple[str, Finding]], defaults: set[str]
+        self,
+        message: str,
+        choices: list[tuple[str, Finding]],
+        defaults: set[str],
+        *,
+        subtitle: str | None = None,
     ) -> list[Finding]: ...
 
 
@@ -73,7 +83,12 @@ class RichPrompter:
         return answer.startswith("y")
 
     def multiselect(
-        self, message: str, choices: list[tuple[str, Finding]], defaults: set[str]
+        self,
+        message: str,
+        choices: list[tuple[str, Finding]],
+        defaults: set[str],
+        *,
+        subtitle: str | None = None,
     ) -> list[Finding]:
         if not choices:
             return []
@@ -86,6 +101,7 @@ class RichPrompter:
             title=message,
             preselected=preselected,
             console=self._console,
+            subtitle=subtitle,
         )
 
 
@@ -173,9 +189,7 @@ def run_interactive(
     # the user is missing something.
     defer_final_tally = bool(curate_findings)
     two_step = bool(curate_findings)
-    primary_title = (
-        "Step 1 of 2 — Select fixes to apply:" if two_step else "Select fixes to apply:"
-    )
+    primary_subtitle = "Step 1 of 2" if two_step else None
     primary_result: ApplyResult | None = None
     if applicable:
         primary_result = _run_primary_picker(
@@ -187,7 +201,8 @@ def run_interactive(
             animate=not options.no_animation,
             baseline_tokens=baseline_tokens,
             include_final_tally=not defer_final_tally,
-            title=primary_title,
+            title="Select fixes to apply",
+            subtitle=primary_subtitle,
         )
     elif findings:
         _render_informational_next_steps(findings, console)
@@ -199,11 +214,7 @@ def run_interactive(
     # Only label curate as "Step 2 of 2" when a primary picker was
     # actually shown — otherwise the step numbering implies a step the
     # user never saw.
-    curate_title = (
-        "Step 2 of 2 — Select items to delete:"
-        if applicable
-        else "Select items to delete:"
-    )
+    curate_subtitle = "Step 2 of 2" if applicable else None
     curate_result = _maybe_run_curate(
         curate_findings,
         active_prompter=active_prompter,
@@ -213,7 +224,8 @@ def run_interactive(
         animate=not options.no_animation,
         baseline_tokens=baseline_tokens,
         previous_savings=primary_savings,
-        title=curate_title,
+        title="Select items to delete",
+        subtitle=curate_subtitle,
     )
 
     # If curate was declined but primary applied, the deferred countdown
@@ -246,7 +258,8 @@ def _run_primary_picker(
     animate: bool,
     baseline_tokens: int | None,
     include_final_tally: bool = True,
-    title: str = "Select fixes to apply:",
+    title: str = "Select fixes to apply",
+    subtitle: str | None = None,
 ) -> ApplyResult | None:
     # Sort descending by token weight so the biggest wins are at the top
     # of the picker regardless of check state. Entries without a measured
@@ -258,7 +271,7 @@ def _run_primary_picker(
     choices = [(_format_choice(f), f) for f in sorted_applicable]
     defaults = {title_str for title_str, f in choices if f.auto_checked}
     selected = active_prompter.multiselect(
-        title, choices=choices, defaults=defaults
+        title, choices=choices, defaults=defaults, subtitle=subtitle
     )
     if not selected:
         console.print("[dim]Nothing selected — continuing.[/dim]")
@@ -290,7 +303,8 @@ def _maybe_run_curate(
     animate: bool,
     baseline_tokens: int | None,
     previous_savings: int = 0,
-    title: str = "Select items to delete:",
+    title: str = "Select items to delete",
+    subtitle: str | None = None,
 ) -> ApplyResult | None:
     """Offer the opt-in per-item curate picker; return apply result or None.
 
@@ -307,7 +321,7 @@ def _maybe_run_curate(
 
     choices = [(_format_choice(f), f) for f in curate_findings]
     selected = active_prompter.multiselect(
-        title, choices=choices, defaults=set()
+        title, choices=choices, defaults=set(), subtitle=subtitle
     )
     if not selected:
         console.print("[dim]Nothing selected — exiting without changes.[/dim]")
@@ -421,66 +435,81 @@ def _render_final_tally(
 
 
 def _render_result(result: ApplyResult, console: Console) -> None:
-    console.print("")
-    lines: list[Text] = []
+    """Render the post-apply panel in the Claude-Code visual vocabulary.
 
-    applied = Text()
-    applied.append("✓ ", style=f"bold {SEVERITY_OK}")
-    applied.append(f"Applied {len(result.succeeded)} change(s)", style="default")
+    Panel title carries a status glyph — ``⏺ Applied`` on success,
+    ``! Applied with failures`` when any action failed. The headline
+    row (``N changes applied · ~X,XXX tokens saved``) sits at the top
+    of the body; per-action rows use ``⎿ ✓`` connectors; snapshot +
+    undo sit in a two-row label grid mirroring the welcome panel.
+    Border colour is the one place in the product where colour encodes
+    semantics (success vs failure) — kept.
+    """
+    console.print("")
+    blocks: list[object] = []
+
+    summary = Text()
+    summary.append(f"{len(result.succeeded)}", style=f"bold {SEVERITY_OK}")
+    summary.append(" changes applied", style=DIM)
     if result.token_savings:
-        applied.append("   ·   ", style=DIM)
-        applied.append(f"~{result.token_savings:,}", style=f"bold {SEVERITY_OK}")
-        applied.append(" tokens saved", style=DIM)
-    lines.append(applied)
+        summary.append("  ·  ", style=DIM)
+        summary.append(f"~{result.token_savings:,}", style=f"bold {SEVERITY_OK}")
+        summary.append(" tokens saved", style=DIM)
+    blocks.append(summary)
 
     if result.succeeded:
-        lines.append(Text(""))
+        blocks.append(Text(""))
         for finding, _ in result.succeeded:
             row = Text()
-            row.append("  ✓ ", style=SEVERITY_OK)
+            row.append(f"  {_CONNECTOR} ", style=DIM)
+            row.append("✓ ", style=SEVERITY_OK)
             savings = finding.token_savings
             if savings is not None:
                 row.append(f"{savings:>6,} tok  ", style=DIM)
             else:
                 row.append("     — tok  ", style=DIM)
             row.append(finding.title, style="default")
-            lines.append(row)
-
-    lines.append(Text(""))
-    snapshot_line = Text()
-    snapshot_line.append("Snapshot  ", style=DIM)
-    snapshot_line.append(str(result.snapshot.root), style="default")
-    lines.append(snapshot_line)
+            blocks.append(row)
 
     if result.failed:
-        lines.append(Text(""))
+        blocks.append(Text(""))
         fail_header = Text()
-        fail_header.append("! ", style=f"bold {SEVERITY_BAD}")
+        fail_header.append("! ", style=f"bold #eab308")
         fail_header.append(f"{len(result.failed)} action(s) failed", style=SEVERITY_BAD)
-        lines.append(fail_header)
+        blocks.append(fail_header)
         for finding, reason in result.failed:
             row = Text()
-            row.append("  · ", style=DIM)
+            row.append(f"  {_CONNECTOR} ", style=DIM)
+            row.append("✗ ", style=SEVERITY_BAD)
             row.append(finding.title, style="default")
             row.append(f"  — {reason}", style=DIM)
-            lines.append(row)
+            blocks.append(row)
 
-    lines.append(Text(""))
-    undo_line = Text()
-    undo_line.append("Undo:  ", style=DIM)
-    undo_line.append(f"unclog restore {result.snapshot.id}", style=f"bold {ACCENT}")
-    lines.append(undo_line)
-
-    border = SEVERITY_BAD if result.failed else SEVERITY_OK
-    console.print(
-        Panel(
-            Text("\n").join(lines),
-            title=Text("Applied", style=f"bold {ACCENT}"),
-            title_align="left",
-            border_style=border,
-            padding=(1, 2),
-        )
+    blocks.append(Text(""))
+    meta = Table.grid(padding=(0, 2))
+    meta.add_column(style=DIM, no_wrap=True)
+    meta.add_column(no_wrap=False)
+    meta.add_row("snapshot", Text(str(result.snapshot.root), style="default"))
+    meta.add_row(
+        "undo",
+        Text(f"unclog restore {result.snapshot.id}", style=f"bold {ACCENT}"),
     )
+    blocks.append(meta)
+
+    # Title: glyph carries the headline. ⏺ on success, ! on partial
+    # failure. Border colour still encodes state for at-a-glance scan.
+    if result.failed:
+        title = Text()
+        title.append_text(status_glyph("attention"))
+        title.append("Applied with failures", style=f"bold {ACCENT}")
+        border = SEVERITY_BAD
+    else:
+        title = Text()
+        title.append_text(status_glyph("running"))
+        title.append("Applied", style=f"bold {ACCENT}")
+        border = SEVERITY_OK
+
+    console.print(rounded_panel(Group(*blocks), title=title, border=border))
 
 
 def _render_informational_next_steps(
@@ -493,18 +522,21 @@ def _render_informational_next_steps(
     ``.claudeignore``, recently-disabled plugin residue, etc. — spec §6).
     Rather than exiting silently, we give the user a concrete next step
     per finding type so they know what to do.
+
+    Rendered in the same rounded-panel vocabulary as the applied panel:
+    ``!`` amber glyph on the title, ``⎿`` connectors for each row.
     """
     console.print("")
-    lines: list[Text] = []
+    blocks: list[object] = []
 
     header = Text()
     header.append("No auto-fixable issues.", style="bold")
     header.append(
-        f"   {len(findings)} informational finding(s) — handle manually:",
+        f"  {len(findings)} informational finding(s) — handle manually:",
         style=DIM,
     )
-    lines.append(header)
-    lines.append(Text(""))
+    blocks.append(header)
+    blocks.append(Text(""))
 
     seen_hints: set[str] = set()
     for f in findings:
@@ -514,27 +546,22 @@ def _render_informational_next_steps(
             continue
         seen_hints.add(key)
         row = Text()
-        row.append("  · ", style=DIM)
+        row.append(f"  {_CONNECTOR} ", style=DIM)
         row.append(f.title, style="default")
         row.append(f"  → {hint}", style=DIM)
-        lines.append(row)
+        blocks.append(row)
 
-    lines.append(Text(""))
+    blocks.append(Text(""))
     footer = Text()
     footer.append("Run ", style=DIM)
     footer.append("unclog --json", style=f"bold {ACCENT}")
     footer.append(" for full evidence on each finding.", style=DIM)
-    lines.append(footer)
+    blocks.append(footer)
 
-    console.print(
-        Panel(
-            Text("\n").join(lines),
-            title=Text("Manual next steps", style=f"bold {ACCENT}"),
-            title_align="left",
-            border_style=DIM,
-            padding=(1, 2),
-        )
-    )
+    title = Text()
+    title.append_text(status_glyph("attention"))
+    title.append("Manual next steps", style=f"bold {ACCENT}")
+    console.print(rounded_panel(Group(*blocks), title=title))
 
 
 def _manual_hint_for(finding: Finding) -> str:

@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from rich.console import Console
+from rich.console import Console, RenderableType
 from rich.text import Text
 
 from unclog import __version__
@@ -34,10 +34,16 @@ from unclog.findings.curate import build_curate_findings
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.tokens import TiktokenCounter, TokenCounter
 from unclog.state import InstallationState
-from unclog.ui.hero import render_hero, render_treemap
+from unclog.ui.chrome import hint_bar, section_rule
+from unclog.ui.hero import render_baseline_panel
 from unclog.ui.theme import ACCENT, DIM, SEVERITY_OK
-from unclog.ui.wordmark import wordmark
+from unclog.ui.welcome import welcome_panel
 from unclog.util.paths import ClaudePaths
+
+# Claude Code's nested-detail connector — anchors grouped child rows
+# to the summary line above them. Same glyph used in the interactive
+# flow's applied/failed blocks.
+_CONNECTOR = "⎿"
 
 SCHEMA_ID = "unclog.v0.1"
 
@@ -798,79 +804,48 @@ def render_rich(
     *,
     show_wordmark: bool = True,
 ) -> None:
-    """Pretty TTY render: wordmark, hero, treemap, inventory.
+    """Pretty TTY render in the Claude-Code visual vocabulary.
 
-    Spec §11.4 suppresses the wordmark in ``--report``/``--json``/``--plain``.
-    The CLI resolves :class:`~unclog.ui.display.DisplayOptions` and passes
-    ``show_wordmark`` so this renderer stays ignorant of mode flags.
+    Frame order: welcome panel → baseline panel → inventory section →
+    findings section → also-running section → warnings → hint bar.
+
+    ``show_wordmark`` is preserved for backwards compatibility: when
+    False the welcome panel is suppressed (used by ``--report`` and
+    non-TTY fallback paths). Spec §11.4 still applies —
+    ``--json``/``--plain`` never route through this renderer.
     """
     report = build_report(state)
     baseline = report["baseline"]
-    inv = report["inventory"]
 
     if show_wordmark:
-        console.print(wordmark())
-    console.print(render_hero(baseline))
-    if report["composition"]:
+        console.print(welcome_panel(state))
         console.print("")
-        console.print(render_treemap(report["composition"]))
+    console.print(render_baseline_panel(baseline, report["composition"]))
     console.print("")
-    console.print(_render_inventory_chips(inv))
+    console.print(section_rule("findings"))
     curate = build_curate_findings(state)
     _render_findings_rich(report["findings"], console, curate_findings=curate)
     _render_also_running(state, report["findings"], console)
     if report["warnings"]:
         console.print("")
+        console.print(section_rule("warnings"))
+        console.print("")
         for warning in report["warnings"]:
-            console.print(f"[#eab308]![/#eab308] [dim]{warning}[/dim]")
-
-
-def _render_inventory_chips(inv: dict[str, int]) -> Text:
-    """Render the inventory line as coloured category chips.
-
-    Each chip is ``N label`` with the count in the category colour and
-    the label dim. Shares the picker's palette so the user's eye learns
-    the taxonomy once and carries it everywhere. Zero-valued categories
-    are dropped to keep the line compact on narrow terminals.
-    """
-    mcp_label = "MCP"
-    if inv["mcp_servers"] and inv.get("mcp_servers_project") == inv["mcp_servers"]:
-        mcp_label = "MCP (project-scoped)"
-    elif inv.get("mcp_servers_project"):
-        mcp_label = f"MCP ({inv['mcp_servers_project']} project-scoped)"
-
-    hooks_total = inv.get("hooks", 0)
-    hooks_label = "hooks"
-    if hooks_total and inv.get("hooks_project") == hooks_total:
-        hooks_label = "hooks (project-scoped)"
-    elif inv.get("hooks_project"):
-        hooks_label = f"hooks ({inv['hooks_project']} project-scoped)"
-
-    chips: list[tuple[str, str, int]] = [
-        ("skills", "skills", inv["skills"]),
-        ("agents", "agents", inv["agents"]),
-        ("commands", "commands", inv["commands"]),
-        ("plugins", "plugins", inv["plugins"]),
-        ("mcp", mcp_label, inv["mcp_servers"]),
-        ("hooks", hooks_label, hooks_total),
-        ("projects", "projects", inv["projects_known"]),
-    ]
-
-    text = Text()
-    first = True
-    for key, label, value in chips:
-        if value == 0 and key != "plugins":
-            # Skip zero categories to save space; plugins=0 is still
-            # worth surfacing so users know their baseline isn't hiding
-            # bundled skills/agents they forgot about.
-            continue
-        colour = _INVENTORY_CHIP_COLOUR.get(key, DIM)
-        if not first:
-            text.append("  ·  ", style=DIM)
-        first = False
-        text.append(f"{value} ", style=f"bold {colour}")
-        text.append(label, style=DIM)
-    return text
+            row = Text()
+            row.append(" ! ", style="#eab308")
+            row.append(warning, style=DIM)
+            console.print(row)
+    if show_wordmark:
+        console.print("")
+        console.print(
+            hint_bar(
+                [
+                    ("enter", "interactive fix"),
+                    ("--json", "machine-readable"),
+                    ("q", "quit"),
+                ]
+            )
+        )
 
 
 def _curate_breakdown(n_agents: int, n_skills: int, n_mcps: int = 0) -> str:
@@ -910,15 +885,6 @@ def _render_curate_clause(
     if detail:
         line.append(f" ({detail})", style=DIM)
     console.print(line)
-
-
-_INFORMATIONAL_GROUP_LABEL: dict[str, str] = {
-    "missing_claudeignore": "projects let Claude scan node_modules/.venv (no .claudeignore)",
-    "disabled_plugin_residue": "recently-disabled plugin residue",
-    "claude_md_dead_ref": "CLAUDE.md dead references",
-    "heavy_hook": "every-turn hooks",
-    "failed_mcp_probe": "MCP servers failed to start",
-}
 
 
 def _render_findings_rich(
@@ -988,26 +954,6 @@ def _render_findings_rich(
             summary.append(f" ({detail})", style=DIM)
     console.print(summary)
 
-    if not informational:
-        return
-
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for f in informational:
-        groups.setdefault(f["type"], []).append(f)
-    for ftype, group in groups.items():
-        label = _INFORMATIONAL_GROUP_LABEL.get(ftype, ftype.replace("_", " "))
-        names = [_short_name(f) for f in group]
-        shown = names[:4]
-        more = f" +{len(names) - 4} more" if len(names) > len(shown) else ""
-        row = Text()
-        row.append("  · ", style=DIM)
-        row.append(f"{len(group)}", style=f"bold {DIM}")
-        row.append(f" {label}: ", style=DIM)
-        row.append(", ".join(shown), style="default")
-        if more:
-            row.append(more, style=DIM)
-        console.print(row)
-
 
 def _render_also_running(
     state: InstallationState,
@@ -1073,13 +1019,13 @@ def _render_also_running(
         return
 
     console.print("")
-    header = Text("also running", style=DIM)
-    header.append(" (no action needed)", style=DIM)
-    console.print(header)
+    console.print(section_rule("also running"))
+    console.print("")
+    console.print(Text("no action needed — measured in baseline above", style=DIM))
 
     for name, count, tokens in mcp_rows:
         row = Text()
-        row.append("  · ", style=DIM)
+        row.append(f"  {_CONNECTOR} ", style=DIM)
         row.append("mcp ", style=f"bold {_INVENTORY_CHIP_COLOUR['mcp']}")
         row.append(name, style="default")
         row.append(f"  {count:,} invocations", style=DIM)
@@ -1089,32 +1035,10 @@ def _render_also_running(
 
     for event, source_scope in hook_rows:
         row = Text()
-        row.append("  · ", style=DIM)
+        row.append(f"  {_CONNECTOR} ", style=DIM)
         row.append("hook ", style=f"bold {_INVENTORY_CHIP_COLOUR['hooks']}")
         row.append(event, style="default")
         row.append(f"  ({source_scope})", style=DIM)
         console.print(row)
 
 
-def _short_name(finding: dict[str, Any]) -> str:
-    """Extract a terse identifier for a finding used in grouped lists."""
-    from pathlib import Path as _P
-
-    action = finding.get("action", {})
-    # Server-level findings (unmeasured_mcp, failed_mcp_probe, …) must
-    # surface the *server* name, not the project that declared them.
-    server_name = action.get("server_name")
-    if server_name:
-        return str(server_name)
-    scope = finding.get("scope", {})
-    project_path = scope.get("project_path")
-    if project_path:
-        return _P(project_path).name
-    plugin_key = action.get("plugin_key")
-    if plugin_key:
-        return str(plugin_key)
-    path = action.get("path")
-    if path:
-        return _P(path).name
-    title = finding.get("title", "")
-    return title.split()[-1] if title else "?"

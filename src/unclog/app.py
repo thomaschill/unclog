@@ -152,6 +152,7 @@ def scan_global(
     plugin_content = _enumerate_enabled_plugin_content(plugins, settings)
 
     session_paths = _latest_sessions_across_projects(paths.projects_dir)
+    latest_session_path = session_paths[0] if session_paths else None
     latest_session = (
         load_session_system_block(session_paths[0], counter) if session_paths else None
     )
@@ -173,6 +174,7 @@ def scan_global(
         installed_plugins=plugins,
         plugin_content=plugin_content,
         latest_session=latest_session,
+        latest_session_path=latest_session_path,
         activity=activity,
         mcp_invocations=MappingProxyType(dict(mcp_invocations)),
     )

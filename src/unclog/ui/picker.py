@@ -39,12 +39,11 @@ from dataclasses import dataclass
 import readchar
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
-from rich.padding import Padding
-from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from unclog.findings.base import Finding
+from unclog.ui.chrome import hint_bar, rounded_panel
 from unclog.ui.theme import ACCENT, DIM
 
 # Category → (short badge label, badge colour). Each finding type is
@@ -73,7 +72,7 @@ _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
 
 _DEFAULT_BADGE = ("other", "#9ca3af")
 _MIN_VISIBLE_ROWS = 6
-# Cap so the header block (wordmark, hero, composition, inventory,
+# Cap so the header block (welcome panel, baseline panel, inventory,
 # findings summary) stays on-screen. On a 30-row terminal this leaves
 # ~12 lines for the report above the picker.
 _MAX_VISIBLE_ROWS = 12
@@ -139,7 +138,24 @@ def _build_frame(
     state: _State,
     title: str,
     visible_rows: int,
+    subtitle: str | None = None,
 ) -> RenderableType:
+    """Render the picker as panel + hint bar + running-total line.
+
+    Returns a ``Group`` containing three vertically-stacked renderables:
+
+    1. **Rounded panel** — table of rows + in-panel position indicator.
+       Cursor row carries a thin left-edge accent bar (``▌``) in a
+       dedicated leading column; text goes bold. No reverse styling —
+       the bar alone is the "you are here" signal.
+    2. **Hint bar** — keybind legend below the panel (outside the frame).
+    3. **Running total** — ``N selected · ~X,XXX tokens to save`` on
+       its own line at the bottom.
+
+    Splitting the legend + total out of the panel matches Claude Code's
+    convention: the panel *is* the content; legends describe it from
+    outside.
+    """
     total = len(findings)
     visible = max(_MIN_VISIBLE_ROWS, min(visible_rows, total))
     _clamp_viewport(state, total, visible)
@@ -152,6 +168,7 @@ def _build_frame(
         pad_edge=False,
         expand=True,
     )
+    table.add_column("cursor", width=1, no_wrap=True)
     table.add_column("marker", width=2, no_wrap=True)
     table.add_column("badge", width=9, no_wrap=True)
     table.add_column("tokens", width=9, justify="right", no_wrap=True)
@@ -165,28 +182,19 @@ def _build_frame(
         is_selected = i in state.selected
 
         badge_label, badge_colour = _category_badge(finding.type)
+        cursor_bar = Text("▌" if is_cursor else " ", style=ACCENT if is_cursor else DIM)
         marker_text = Text("●" if is_selected else "○", style=badge_colour if is_selected else DIM)
         badge_text = Text(badge_label, style=f"bold {badge_colour}")
         tokens_text = _format_tokens(finding.token_savings)
         scope_text = _format_scope(finding.scope.kind)
-        title_text = Text(finding.title, style="default")
-
-        if is_cursor:
-            row_style = f"reverse {ACCENT}"
-            table.add_row(
-                marker_text,
-                badge_text,
-                tokens_text,
-                scope_text,
-                title_text,
-                style=row_style,
-            )
-        else:
-            table.add_row(marker_text, badge_text, tokens_text, scope_text, title_text)
+        title_style = f"bold {ACCENT}" if is_cursor else "default"
+        title_text = Text(finding.title, style=title_style)
+        table.add_row(cursor_bar, marker_text, badge_text, tokens_text, scope_text, title_text)
 
     # Scroll indicators: compact "12-30 of 196" so the user always
     # knows where they are in the list, plus tiny arrows when more
-    # content exists above or below the viewport.
+    # content exists above or below the viewport. Stays inside the
+    # panel — it's panel-local state, not a global legend.
     above = state.viewport_top > 0
     below = end < total
     position = Text()
@@ -198,53 +206,44 @@ def _build_frame(
     if below:
         position.append("   ↓ more below", style=DIM)
 
+    panel = rounded_panel(
+        Group(table, Text(""), position),
+        title=title,
+        subtitle=subtitle,
+    )
+
+    legend = hint_bar(
+        [
+            ("↑↓", "move"),
+            ("space", "toggle"),
+            ("A", "all"),
+            ("n", "none"),
+            ("enter", "apply"),
+            ("q", "quit"),
+        ]
+    )
+
     selected_count = len(state.selected)
     token_total = sum(
         f.token_savings or 0 for i, f in enumerate(findings) if i in state.selected
     )
-    footer = Text()
-    footer.append(f"  {selected_count}", style=f"bold {ACCENT}")
-    footer.append(" selected  ", style=DIM)
+    running_total = Text()
+    running_total.append("  ", style=DIM)
+    running_total.append(f"{selected_count}", style=f"bold {ACCENT}")
+    running_total.append(" selected", style=DIM)
     if token_total:
-        footer.append("·  ", style=DIM)
-        footer.append(f"~{token_total:,}", style=f"bold {ACCENT}")
-        footer.append(" tokens to save", style=DIM)
+        running_total.append("  ·  ", style=DIM)
+        running_total.append(f"~{token_total:,}", style=f"bold {ACCENT}")
+        running_total.append(" tokens to save", style=DIM)
 
-    legend = Text()
-    for label, keys in (
-        ("move", "↑↓"),
-        ("toggle", "space"),
-        ("invert", "a"),
-        ("all", "A"),
-        ("none", "n"),
-        ("submit", "enter"),
-        ("quit", "q"),
-    ):
-        legend.append(keys, style=f"bold {ACCENT}")
-        legend.append(f" {label}   ", style=DIM)
-
-    body = Group(
-        table,
-        Text(""),
-        position,
-        footer,
-        Text(""),
-        Padding(legend, (0, 1)),
-    )
-    return Panel(
-        body,
-        title=Text(title, style=f"bold {ACCENT}"),
-        title_align="left",
-        border_style=DIM,
-        padding=(1, 1),
-    )
+    return Group(panel, legend, running_total)
 
 
 def _compute_visible_rows(console: Console) -> int:
     """Reserve room for panel chrome + status + keybinds; rest is rows.
 
     Capped at ``_MAX_VISIBLE_ROWS`` so the scan report above the picker
-    (wordmark, hero, top contributors, inventory, findings summary)
+    (welcome panel, baseline panel, inventory, findings summary)
     remains on-screen on normal laptop terminals. Users can scroll the
     picker with ↑↓/PgUp/PgDn when the list exceeds the cap.
     """
@@ -265,11 +264,16 @@ def run_rich_multiselect(
     title: str,
     preselected: set[int],
     console: Console,
+    subtitle: str | None = None,
 ) -> list[Finding]:
     """Drive a Rich Live multiselect picker and return chosen findings.
 
     Returns ``[]`` when the user quits with ``q`` or ``Esc``. An empty
     confirm (Enter with nothing selected) also returns ``[]``.
+
+    ``subtitle`` renders right-aligned on the panel's bottom border in
+    DIM style — used for ``"Step 1 of 2"`` when a second curate picker
+    will follow. ``None`` omits the subtitle.
     """
     if not findings:
         return []
@@ -278,7 +282,7 @@ def run_rich_multiselect(
     visible_rows = _compute_visible_rows(console)
 
     with Live(
-        _build_frame(findings, state, title, visible_rows),
+        _build_frame(findings, state, title, visible_rows, subtitle),
         console=console,
         screen=False,
         refresh_per_second=30,
@@ -320,7 +324,7 @@ def run_rich_multiselect(
                     return []
 
             visible_rows = _compute_visible_rows(console)
-            live.update(_build_frame(findings, state, title, visible_rows))
+            live.update(_build_frame(findings, state, title, visible_rows, subtitle))
 
 
 __all__ = ["run_rich_multiselect"]

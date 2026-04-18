@@ -25,7 +25,12 @@ class FakePrompter:
         return self.confirm_answers.pop(0)
 
     def multiselect(
-        self, message: str, choices: list[tuple[str, Finding]], defaults: set[str]
+        self,
+        message: str,
+        choices: list[tuple[str, Finding]],
+        defaults: set[str],
+        *,
+        subtitle: str | None = None,
     ) -> list[Finding]:
         return list(self.multiselect_answer)
 
