@@ -1,22 +1,25 @@
-"""Parse the first system block from a project's latest session JSONL.
+"""Parse Claude Code session JSONLs for baseline evidence.
 
-This is unclog's single load-bearing technical read: it is how we learn
-the real token footprint of a Claude Code session (CLAUDE.md, skills,
-MCP schemas, and everything Claude Code itself injects). We measure
-what actually hit the wire rather than what *could* hit the wire.
+Two signals we try to read from session data:
 
-The Claude Code session JSONL format is not publicly documented and is
-expected to drift across releases. This parser is intentionally
-permissive: it scans a bounded prefix of the file, skips malformed
-lines, accepts several plausible shapes for the system prompt, and
-returns ``None`` when it cannot find anything it recognises. Callers
-degrade to byte-estimate baselines rather than crashing.
+1. **System prompt text + ``tools`` array.** Used to be the authoritative
+   measurement of the real token footprint Claude Code sent to the model.
+   As of Claude Code ~1.x (observed 2026-04), these no longer appear as
+   standalone records in the JSONL — the format moved to reporting
+   ``cache_creation_input_tokens`` / ``cache_read_input_tokens`` on each
+   assistant turn's ``usage`` block instead. :func:`load_session_system_block`
+   therefore returns ``None`` on modern sessions, and the hero falls back
+   to the filesystem composition sum (which is honest: it counts what
+   users can *actually* change, not Claude Code's static runtime overhead).
 
-Scope for v0.1: extract the system prompt text, any ``tools`` array,
-and per-MCP invocation counts (by counting ``tool_use`` blocks whose
-name starts with ``mcp__``). Per-source attribution (which tokens came
-from which MCP / skill / CLAUDE.md) is layered on top of this in
-``unclog.app`` where we have the filesystem state to compare against.
+2. **Per-MCP invocation counts.** Still extractable — every assistant
+   turn still writes ``tool_use`` blocks with the ``mcp__<server>__<tool>``
+   naming convention, and :func:`count_mcp_invocations` walks them to
+   feed ``unused_mcp`` / ``dead_mcp`` detectors.
+
+The parser is intentionally permissive: bounded prefix scan, malformed
+line skipping, multiple plausible shapes for the system prompt. Callers
+never see exceptions — only ``None`` or empty mappings.
 """
 
 from __future__ import annotations

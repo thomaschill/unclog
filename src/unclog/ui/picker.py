@@ -56,6 +56,8 @@ _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
     "disabled_plugin_residue": ("residue", "#f472b6"),
     "dead_mcp": ("mcp", "#fb923c"),
     "unused_mcp": ("mcp", "#fb923c"),
+    "failed_mcp_probe": ("mcp", "#fb923c"),
+    "unmeasured_mcp": ("mcp", "#fb923c"),
     "missing_claudeignore": ("ignore", "#facc15"),
     "claude_md_dead_ref": ("md-ref", "#fca5a5"),
     "claude_md_duplicate": ("md-dup", "#fca5a5"),

@@ -21,6 +21,8 @@ from typing import Any, Literal
 FindingType = Literal[
     "dead_mcp",
     "unused_mcp",
+    "failed_mcp_probe",
+    "unmeasured_mcp",
     "stale_plugin",
     "disabled_plugin_residue",
     "claude_md_dead_ref",

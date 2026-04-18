@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 from unclog.findings.curate import build_curate_findings
+from unclog.scan.config import ClaudeConfig, McpServer, ProjectRecord
 from unclog.scan.filesystem import Agent, Skill
 from unclog.state import GlobalScope, InstallationState
 
@@ -13,11 +15,12 @@ def _state_with(
     *,
     agents: tuple[Agent, ...] = (),
     skills: tuple[Skill, ...] = (),
+    config: ClaudeConfig | None = None,
     claude_home: Path = Path("/tmp/claude"),
 ) -> InstallationState:
     gs = GlobalScope(
         claude_home=claude_home,
-        config=None,
+        config=config,
         settings=None,
         claude_md_bytes=0,
         claude_md_text="",
@@ -112,3 +115,59 @@ def test_build_curate_findings_handles_missing_description() -> None:
     findings = build_curate_findings(state)
     assert len(findings) == 1
     assert findings[0].reason == "no description"
+
+
+def test_build_curate_findings_includes_remote_mcps_as_comment_out() -> None:
+    """SSE/HTTP MCPs surface as curate rows with ``comment_out_mcp`` action.
+
+    Without this, remote MCPs were completely invisible to users — we
+    couldn't probe them locally, so a detector had no signal to fire on.
+    Landing them in curate lets users kill unused remotes with one click
+    even when we can't measure their token cost.
+    """
+    http = McpServer(
+        name="polymarket-docs",
+        raw=MappingProxyType({"type": "http", "url": "https://docs.polymarket.com/mcp"}),
+    )
+    sse = McpServer(
+        name="sse-server",
+        raw=MappingProxyType({"type": "sse", "url": "https://mcp.deepwiki.com/sse"}),
+    )
+    stdio = McpServer(
+        name="Roblox_Studio",
+        command="/path/cmd",
+        raw=MappingProxyType({"type": "stdio", "command": "/path/cmd"}),
+    )
+    config = ClaudeConfig(
+        mcp_servers=MappingProxyType(
+            {"polymarket-docs": http, "sse-server": sse, "Roblox_Studio": stdio}
+        )
+    )
+    findings = build_curate_findings(_state_with(config=config))
+    unmeasured = [f for f in findings if f.type == "unmeasured_mcp"]
+    assert sorted(f.action.server_name for f in unmeasured) == [
+        "polymarket-docs",
+        "sse-server",
+    ]
+    assert all(f.action.primitive == "comment_out_mcp" for f in unmeasured)
+    assert all(f.token_savings is None for f in unmeasured)
+
+
+def test_build_curate_findings_dedupes_remote_mcp_across_projects() -> None:
+    """Same remote MCP in N projects collapses to one curate row."""
+    http = McpServer(
+        name="polymarket-docs",
+        raw=MappingProxyType({"type": "http", "url": "https://docs.polymarket.com/mcp"}),
+    )
+    p1 = ProjectRecord(
+        path=Path("/a"),
+        mcp_servers=MappingProxyType({"polymarket-docs": http}),
+    )
+    p2 = ProjectRecord(
+        path=Path("/b"),
+        mcp_servers=MappingProxyType({"polymarket-docs": http}),
+    )
+    config = ClaudeConfig(projects=MappingProxyType({Path("/a"): p1, Path("/b"): p2}))
+    findings = build_curate_findings(_state_with(config=config))
+    unmeasured = [f for f in findings if f.type == "unmeasured_mcp"]
+    assert len(unmeasured) == 1

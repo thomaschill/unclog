@@ -145,6 +145,34 @@ def test_scan_project_returns_empty_hooks_when_absent(tmp_path: Path) -> None:
     assert scope.hooks == ()
 
 
+def test_scan_project_skips_hooks_when_project_claude_is_the_global_home(
+    tmp_path: Path,
+) -> None:
+    """``$HOME`` as a project must not re-read global settings as project hooks.
+
+    Claude Code records every directory you've ever opened under
+    ``~/.claude.json``'s ``projects{}`` map, including ``$HOME``. If the
+    project scanner reads ``$HOME/.claude/settings.json``, it double-
+    counts the global settings file — once globally, once as "project."
+    """
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    (claude_home / "settings.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": "global-cmd"}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    scope = scan_project(tmp_path, claude_home=claude_home)
+    assert scope.hooks == ()
+
+
 def test_scan_project_skips_malformed_settings_without_crashing(tmp_path: Path) -> None:
     project = tmp_path / "broken"
     (project / ".claude").mkdir(parents=True)

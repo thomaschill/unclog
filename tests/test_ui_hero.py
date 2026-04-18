@@ -30,7 +30,13 @@ def _rgb(hex_colour: str) -> str:
     return f"{int(h[0:2], 16)};{int(h[2:4], 16)};{int(h[4:6], 16)}"
 
 
-def test_hero_renders_number_and_provenance() -> None:
+def test_hero_renders_number_in_plain_english() -> None:
+    """Hero is plain English: ``N,NNN tokens in your Claude Code baseline``.
+
+    Provenance (session vs filesystem) and unmeasured-MCP footnotes were
+    removed in the v0.1 UX pass — the composition block below carries
+    that information via per-row token counts vs ``—`` placeholders.
+    """
     baseline = {
         "estimated_tokens": 42180,
         "tokens_source": "session+tiktoken",
@@ -39,7 +45,7 @@ def test_hero_renders_number_and_provenance() -> None:
     }
     out = _capture(render_hero(baseline))
     assert "42,180" in out
-    assert "from latest session" in out
+    assert "tokens in your Claude Code baseline" in out
 
 
 def test_hero_number_uses_accent_colour() -> None:
@@ -53,15 +59,23 @@ def test_hero_number_uses_accent_colour() -> None:
     assert _rgb(ACCENT) in ansi
 
 
-def test_hero_surfaces_unmeasured_mcp_count() -> None:
+def test_hero_does_not_surface_provenance_jargon() -> None:
+    """Regression: hero must not carry jargon footnotes.
+
+    The old hero tacked on "from files (no session yet)" and
+    "N MCP unmeasured" — both were opaque to users and are now
+    represented by the composition block instead.
+    """
     baseline = {
         "estimated_tokens": 80000,
-        "tokens_source": "session+tiktoken",
+        "tokens_source": "tiktoken",
         "attributed_tokens": 70000,
         "unmeasured_sources": 3,
     }
     plain = _capture(render_hero(baseline))
-    assert "3 MCP unmeasured" in plain
+    assert "MCP unmeasured" not in plain
+    assert "no session" not in plain
+    assert "from files" not in plain
 
 
 def test_treemap_renders_segment_labels_for_large_shares() -> None:
@@ -94,7 +108,9 @@ def test_treemap_empty_when_nothing_measurable() -> None:
     assert "no measurable composition" in out
 
 
-def test_wordmark_includes_product_name_and_version() -> None:
+def test_wordmark_includes_product_name() -> None:
+    """Wordmark is name-only — version/subtitle removed in the UX trim."""
     out = _capture(wordmark())
     assert "unclog" in out
-    assert "local-only audit" in out
+    # Regression: no subtitle chrome.
+    assert "local-only audit" not in out

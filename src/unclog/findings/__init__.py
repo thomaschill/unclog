@@ -26,6 +26,7 @@ from unclog.findings.detectors import (
     claude_md_oversized,
     dead_mcp,
     disabled_plugin_residue,
+    failed_mcp_probe,
     heavy_hook,
     missing_claudeignore,
     scope_mismatch,
@@ -73,6 +74,7 @@ def detect(
     findings: list[Finding] = []
     findings.extend(dead_mcp.detect(state, activity, thresholds, now=reference))
     findings.extend(unused_mcp.detect(state, activity, thresholds, now=reference))
+    findings.extend(failed_mcp_probe.detect(state, activity, thresholds, now=reference))
     findings.extend(stale_plugin.detect(state, activity, thresholds, now=reference))
     findings.extend(
         claude_md_duplicate.detect(

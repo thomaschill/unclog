@@ -168,7 +168,14 @@ def run_interactive(
     # When curate is available, defer the countdown + retention warn
     # out of primary's _execute so the user sees one cumulative
     # "N,NNN → M,MMM" animation at the end rather than two separate ones.
+    # Titles pick up a "Step 1 of 2 — ..." prefix only when a second
+    # curate step will actually fire, so single-step runs don't suggest
+    # the user is missing something.
     defer_final_tally = bool(curate_findings)
+    two_step = bool(curate_findings)
+    primary_title = (
+        "Step 1 of 2 — Select fixes to apply:" if two_step else "Select fixes to apply:"
+    )
     primary_result: ApplyResult | None = None
     if applicable:
         primary_result = _run_primary_picker(
@@ -180,6 +187,7 @@ def run_interactive(
             animate=not options.no_animation,
             baseline_tokens=baseline_tokens,
             include_final_tally=not defer_final_tally,
+            title=primary_title,
         )
     elif findings:
         _render_informational_next_steps(findings, console)
@@ -188,6 +196,14 @@ def run_interactive(
         return primary_result
 
     primary_savings = primary_result.token_savings if primary_result is not None else 0
+    # Only label curate as "Step 2 of 2" when a primary picker was
+    # actually shown — otherwise the step numbering implies a step the
+    # user never saw.
+    curate_title = (
+        "Step 2 of 2 — Select items to delete:"
+        if applicable
+        else "Select items to delete:"
+    )
     curate_result = _maybe_run_curate(
         curate_findings,
         active_prompter=active_prompter,
@@ -197,6 +213,7 @@ def run_interactive(
         animate=not options.no_animation,
         baseline_tokens=baseline_tokens,
         previous_savings=primary_savings,
+        title=curate_title,
     )
 
     # If curate was declined but primary applied, the deferred countdown
@@ -229,6 +246,7 @@ def _run_primary_picker(
     animate: bool,
     baseline_tokens: int | None,
     include_final_tally: bool = True,
+    title: str = "Select fixes to apply:",
 ) -> ApplyResult | None:
     # Sort descending by token weight so the biggest wins are at the top
     # of the picker regardless of check state. Entries without a measured
@@ -238,9 +256,9 @@ def _run_primary_picker(
         key=lambda f: (f.token_savings is None, -(f.token_savings or 0), f.title),
     )
     choices = [(_format_choice(f), f) for f in sorted_applicable]
-    defaults = {title for title, f in choices if f.auto_checked}
+    defaults = {title_str for title_str, f in choices if f.auto_checked}
     selected = active_prompter.multiselect(
-        "Select fixes to apply:", choices=choices, defaults=defaults
+        title, choices=choices, defaults=defaults
     )
     if not selected:
         console.print("[dim]Nothing selected — continuing.[/dim]")
@@ -272,6 +290,7 @@ def _maybe_run_curate(
     animate: bool,
     baseline_tokens: int | None,
     previous_savings: int = 0,
+    title: str = "Select items to delete:",
 ) -> ApplyResult | None:
     """Offer the opt-in per-item curate picker; return apply result or None.
 
@@ -288,7 +307,7 @@ def _maybe_run_curate(
 
     choices = [(_format_choice(f), f) for f in curate_findings]
     selected = active_prompter.multiselect(
-        "Select items to delete:", choices=choices, defaults=set()
+        title, choices=choices, defaults=set()
     )
     if not selected:
         console.print("[dim]Nothing selected — exiting without changes.[/dim]")
@@ -313,11 +332,14 @@ def _maybe_run_curate(
 def _format_curate_summary(findings: list[Finding], total_tokens: int) -> str:
     n_agents = sum(1 for f in findings if f.type == "agent_inventory")
     n_skills = sum(1 for f in findings if f.type == "skill_inventory")
+    n_mcps = sum(1 for f in findings if f.type == "unmeasured_mcp")
     parts: list[str] = []
     if n_agents:
         parts.append(f"{n_agents} agent(s)")
     if n_skills:
         parts.append(f"{n_skills} skill(s)")
+    if n_mcps:
+        parts.append(f"{n_mcps} remote MCP(s)")
     label = " + ".join(parts) or f"{len(findings)} item(s)"
     tokens = f"~{total_tokens:,} tok" if total_tokens else "unmeasured"
     return f"Review {label} one-by-one ({tokens})?"
@@ -532,6 +554,12 @@ def _manual_hint_for(finding: Finding) -> str:
         case "claude_md_dead_ref":
             target = str(path) if path else "the referenced CLAUDE.md"
             return f"review and rewrite surrounding prose in {target}"
+        case "failed_mcp_probe":
+            server = finding.action.server_name or "the server"
+            return (
+                f"check that {server!r}'s command is on PATH and starts "
+                f"cleanly; see --json evidence for captured stderr"
+            )
         case _:
             return "see --json output for evidence"
 
