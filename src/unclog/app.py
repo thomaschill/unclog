@@ -201,11 +201,17 @@ def _scan_projects(
     )
     paths = claude_paths()
     scopes: list[ProjectScope] = []
+    stale_count = 0
     for target in targets:
         scoped = scan_project(target, memory_file=paths.project_memory_file(target))
         if not scoped.exists and not narrowed:
-            warnings.append(f"Project path no longer exists: {target}")
+            stale_count += 1
         scopes.append(scoped)
+    if stale_count:
+        warnings.append(
+            f"{stale_count} known project path(s) no longer exist on disk "
+            f"(run with --list-claude-md for details)"
+        )
     return tuple(scopes)
 
 

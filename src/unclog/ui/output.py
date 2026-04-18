@@ -554,11 +554,15 @@ def _claude_md_rows(state: InstallationState) -> list[dict[str, Any]]:
 def _claude_md_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
     """Aggregate counts for the listing footer."""
     present = [r for r in rows if r["status"] == "present"]
+    project_rows = [r for r in rows if r["scope"] == "project"]
     return {
         "files_present": len(present),
         "tokens_total": sum(r["tokens"] or 0 for r in present),
-        "projects_scanned": sum(1 for r in rows if r["scope"] == "project"),
+        "projects_scanned": len(project_rows),
         "projects_missing": sum(1 for r in rows if r["status"] == "path_missing"),
+        "projects_empty": sum(
+            1 for r in project_rows if r["status"] == "absent"
+        ),
     }
 
 
@@ -584,18 +588,26 @@ def render_claude_md_listing_plain(state: InstallationState) -> str:
     lines.append("")
     lines.append("project CLAUDE.md:")
     project_rows = [r for r in rows if r["scope"] == "project"]
+    content_rows = [r for r in project_rows if r["status"] == "present"]
+    empty = totals["projects_empty"]
+    missing = totals["projects_missing"]
+    hidden: list[str] = []
+    if empty:
+        hidden.append(f"{empty} without a CLAUDE.md")
+    if missing:
+        hidden.append(f"{missing} path missing")
     if not project_rows:
         lines.append("  (no projects scanned)")
+    elif not content_rows:
+        lines.append("  (none of the known projects have a CLAUDE.md)")
+        if hidden:
+            lines.append(f"  (hidden: {' · '.join(hidden)})")
     else:
-        for r in project_rows:
-            tokens = "—" if r["tokens"] is None else f"{r['tokens']:>8,} tok"
-            if r["status"] == "path_missing":
-                note = "  (path missing on disk)"
-            elif r["status"] == "absent":
-                note = "  (no CLAUDE.md)"
-            else:
-                note = ""
-            lines.append(f"  {tokens}  {r['name']}{note}  {r['path']}")
+        for r in content_rows:
+            tokens = f"{r['tokens']:>8,} tok"
+            lines.append(f"  {tokens}  {r['name']}  {r['path']}")
+        if hidden:
+            lines.append(f"  (hidden: {' · '.join(hidden)})")
     lines.append("")
     lines.append("auto-memory (MEMORY.md):")
     memory_rows = [r for r in rows if r["scope"] == "memory"]
@@ -632,12 +644,31 @@ def render_claude_md_listing_rich(state: InstallationState, console: Console) ->
         _print_claude_md_row(console, r)
     console.print("")
     project_rows = [r for r in rows if r["scope"] == "project"]
-    console.print(Text(f"project CLAUDE.md ({len(project_rows)})", style=DIM))
+    content_rows = [r for r in project_rows if r["status"] == "present"]
+    empty = totals["projects_empty"]
+    missing = totals["projects_missing"]
+    hidden: list[str] = []
+    if empty:
+        hidden.append(f"{empty} without a CLAUDE.md")
+    if missing:
+        hidden.append(f"{missing} path missing")
+    console.print(
+        Text(
+            f"project CLAUDE.md ({len(content_rows)}/{len(project_rows)} with content)",
+            style=DIM,
+        )
+    )
     if not project_rows:
         console.print("  [dim](no projects scanned)[/dim]")
+    elif not content_rows:
+        console.print("  [dim](none of the known projects have a CLAUDE.md)[/dim]")
+        if hidden:
+            console.print(f"  [dim](hidden: {' · '.join(hidden)})[/dim]")
     else:
-        for r in project_rows:
+        for r in content_rows:
             _print_claude_md_row(console, r)
+        if hidden:
+            console.print(f"  [dim](hidden: {' · '.join(hidden)})[/dim]")
     console.print("")
     memory_rows = [r for r in rows if r["scope"] == "memory"]
     console.print(Text(f"auto-memory MEMORY.md ({len(memory_rows)})", style=DIM))
