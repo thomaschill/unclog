@@ -111,22 +111,33 @@ def run_interactive(
     options: InteractiveOptions,
     prompter: Prompter | None = None,
     baseline_tokens: int | None = None,
+    curate_findings: list[Finding] | None = None,
 ) -> ApplyResult | None:
-    """Run the interactive fix flow. Returns the apply result, or None.
+    """Run the interactive fix flow. Returns the last apply result, or None.
 
-    ``None`` means the user exited before apply (said No to either
-    prompt or deselected everything). Callers should treat ``None``
-    as "no mutations happened."
+    Two sequential decision surfaces:
+
+    1. **Primary picker** — detector findings (real problems). Auto-check
+       state mirrors ``Finding.auto_checked``. Confirm then apply.
+    2. **Curate picker** — opt-in secondary picker over
+       ``curate_findings`` (every local agent + skill, enumerated).
+       Offered with a y/N prompt *after* primary resolves, so users who
+       want to prune by hand aren't drowned by 200 rows at startup.
+
+    ``None`` means no mutations happened. A non-None result is the last
+    apply's result (curate if curate ran, else primary).
     """
-    if not findings:
+    curate_findings = curate_findings or []
+    if not findings and not curate_findings:
         return None
 
     applicable = [f for f in findings if f.action.primitive != "flag_only"]
-    if not applicable:
-        _render_informational_next_steps(findings, console)
-        return None
 
+    # --yes path: apply every auto-checked primary finding non-interactively.
+    # Curate is never auto-applied — consent is always per-item.
     if options.yes:
+        if not applicable:
+            return None
         auto = [f for f in applicable if f.auto_checked]
         if not auto:
             console.print("[dim]--yes: no auto-checked findings to apply.[/dim]")
@@ -149,6 +160,56 @@ def run_interactive(
     else:
         active_prompter = prompter
 
+    # Primary flow first. When there are only informational (flag-only)
+    # findings, render the manual-remediation hints — even if curate is
+    # also available, since the hints are independent actionable next
+    # steps (".claudeignore" creation, etc.).
+    primary_result: ApplyResult | None = None
+    if applicable:
+        primary_result = _run_primary_picker(
+            applicable,
+            active_prompter=active_prompter,
+            console=console,
+            claude_home=claude_home,
+            project_paths=project_paths,
+            animate=not options.no_animation,
+            baseline_tokens=baseline_tokens,
+        )
+    elif findings:
+        _render_informational_next_steps(findings, console)
+
+    if not curate_findings:
+        return primary_result
+
+    # Offer curate. The baseline shown in the countdown is the
+    # post-primary baseline so the "was X now Y" reads truthfully.
+    post_primary_baseline: int | None = None
+    if baseline_tokens is not None:
+        saved = primary_result.token_savings if primary_result is not None else 0
+        post_primary_baseline = baseline_tokens - saved
+
+    curate_result = _maybe_run_curate(
+        curate_findings,
+        active_prompter=active_prompter,
+        console=console,
+        claude_home=claude_home,
+        project_paths=project_paths,
+        animate=not options.no_animation,
+        baseline_tokens=post_primary_baseline,
+    )
+    return curate_result if curate_result is not None else primary_result
+
+
+def _run_primary_picker(
+    applicable: list[Finding],
+    *,
+    active_prompter: Prompter,
+    console: Console,
+    claude_home: Path,
+    project_paths: tuple[Path, ...],
+    animate: bool,
+    baseline_tokens: int | None,
+) -> ApplyResult | None:
     # Sort descending by token weight so the biggest wins are at the top
     # of the picker regardless of check state. Entries without a measured
     # savings value sort last.
@@ -162,7 +223,7 @@ def run_interactive(
         "Select fixes to apply:", choices=choices, defaults=defaults
     )
     if not selected:
-        console.print("[dim]Nothing selected — exiting without changes.[/dim]")
+        console.print("[dim]Nothing selected — continuing.[/dim]")
         return None
 
     if not active_prompter.confirm(
@@ -175,9 +236,68 @@ def run_interactive(
         claude_home=claude_home,
         project_paths=project_paths,
         console=console,
-        animate=not options.no_animation,
+        animate=animate,
         baseline_tokens=baseline_tokens,
     )
+
+
+def _maybe_run_curate(
+    curate_findings: list[Finding],
+    *,
+    active_prompter: Prompter,
+    console: Console,
+    claude_home: Path,
+    project_paths: tuple[Path, ...],
+    animate: bool,
+    baseline_tokens: int | None,
+) -> ApplyResult | None:
+    """Offer the opt-in per-item curate picker; return apply result or None.
+
+    Shows a one-line summary (count + total token cost) so the user can
+    decide whether a hand-prune is worth it before opening a 200-row
+    picker. ``n``/empty answer declines quietly — the report already
+    printed, so no mutation is a valid outcome.
+    """
+    total_tokens = sum(f.token_savings or 0 for f in curate_findings)
+    summary = _format_curate_summary(curate_findings, total_tokens)
+    console.print("")
+    if not active_prompter.confirm(summary, default=False):
+        return None
+
+    choices = [(_format_choice(f), f) for f in curate_findings]
+    selected = active_prompter.multiselect(
+        "Select items to delete:", choices=choices, defaults=set()
+    )
+    if not selected:
+        console.print("[dim]Nothing selected — exiting without changes.[/dim]")
+        return None
+
+    if not active_prompter.confirm(
+        f"Delete {len(selected)} item(s)?", default=False
+    ):
+        return None
+
+    return _execute(
+        selected,
+        claude_home=claude_home,
+        project_paths=project_paths,
+        console=console,
+        animate=animate,
+        baseline_tokens=baseline_tokens,
+    )
+
+
+def _format_curate_summary(findings: list[Finding], total_tokens: int) -> str:
+    n_agents = sum(1 for f in findings if f.type == "agent_inventory")
+    n_skills = sum(1 for f in findings if f.type == "skill_inventory")
+    parts: list[str] = []
+    if n_agents:
+        parts.append(f"{n_agents} agent(s)")
+    if n_skills:
+        parts.append(f"{n_skills} skill(s)")
+    label = " + ".join(parts) or f"{len(findings)} item(s)"
+    tokens = f"~{total_tokens:,} tok" if total_tokens else "unmeasured"
+    return f"Review {label} one-by-one ({tokens})?"
 
 
 def _execute(

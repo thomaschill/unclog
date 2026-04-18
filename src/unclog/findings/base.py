@@ -30,6 +30,10 @@ FindingType = Literal[
     "scope_mismatch_project_to_global",
     "missing_claudeignore",
     "heavy_hook",
+    # Curate-picker inventory types: one Finding per local agent/skill,
+    # surfaced via the opt-in secondary picker. Not emitted by detectors.
+    "agent_inventory",
+    "skill_inventory",
 ]
 
 ScopeKind = Literal["global", "project", "global_to_project", "project_to_global"]

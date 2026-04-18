@@ -160,6 +160,7 @@ def _launch_interactive(
 ) -> None:
     """Gate the interactive fix flow behind the scan + findings layer."""
     from unclog.findings import detect, load_thresholds
+    from unclog.findings.curate import build_curate_findings
 
     paths = claude_paths()
     thresholds = load_thresholds(paths.config_toml)
@@ -169,7 +170,8 @@ def _launch_interactive(
         thresholds,
         now=state.generated_at,
     )
-    if not findings:
+    curate_findings = build_curate_findings(state)
+    if not findings and not curate_findings:
         return
     project_paths = tuple(p.path for p in state.project_scopes if p.exists)
     run_interactive(
@@ -182,6 +184,7 @@ def _launch_interactive(
             no_animation=no_animation,
         ),
         baseline_tokens=baseline_tokens(state),
+        curate_findings=curate_findings,
     )
 
 

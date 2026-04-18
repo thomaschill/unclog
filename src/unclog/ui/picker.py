@@ -62,6 +62,11 @@ _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
     "claude_md_oversized": ("md-big", "#fca5a5"),
     "scope_mismatch_global_to_project": ("scope", "#a3a3a3"),
     "scope_mismatch_project_to_global": ("scope", "#a3a3a3"),
+    # Curate-picker types. Different palette from detector badges so
+    # the user can tell at a glance this picker is "pick-what-to-prune"
+    # rather than "fix-detected-problems".
+    "agent_inventory": ("agent", "#60a5fa"),
+    "skill_inventory": ("skill", "#2dd4bf"),
 }
 
 _DEFAULT_BADGE = ("other", "#9ca3af")
