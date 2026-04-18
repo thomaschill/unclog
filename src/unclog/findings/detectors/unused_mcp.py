@@ -110,11 +110,12 @@ def detect(
             if project_path is not None
             else Scope(kind="global")
         )
+        token_label = f"~{tokens:,} tok" if tokens else "unknown tokens"
         findings.append(
             Finding(
                 id=f"unused_mcp:{name}",
                 type="unused_mcp",
-                title=f"MCP {name!r} loads every session but was never invoked",
+                title=f"MCP {name!r} loads {token_label} every session, 0 invocations in recent sessions",
                 reason="tools schema loaded; zero tool_use records across recent sessions",
                 scope=scope,
                 action=Action(primitive="comment_out_mcp", server_name=name),

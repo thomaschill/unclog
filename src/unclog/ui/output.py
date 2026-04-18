@@ -30,11 +30,12 @@ from unclog import __version__
 from unclog.findings import detect as detect_findings
 from unclog.findings import load_thresholds
 from unclog.findings.base import Finding
+from unclog.findings.curate import build_curate_findings
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.tokens import TiktokenCounter, TokenCounter
-from unclog.state import InstallationState, tier_for_baseline
+from unclog.state import InstallationState
 from unclog.ui.hero import render_hero, render_treemap
-from unclog.ui.theme import ACCENT, DIM, SEVERITY_LEAN
+from unclog.ui.theme import ACCENT, DIM, SEVERITY_OK
 from unclog.ui.wordmark import wordmark
 from unclog.util.paths import ClaudePaths
 
@@ -380,7 +381,6 @@ def _baseline(
         "estimated_tokens": total,
         "attributed_tokens": attributed_tokens,
         "tokens_source": tokens_source,
-        "tier": tier_for_baseline(total),
         "unmeasured_sources": unmeasured_sources,
         "session_path": str(session.session_path) if session else None,
     }
@@ -729,19 +729,11 @@ def render_plain(state: InstallationState) -> str:
     """ASCII-only, colour-free text render. Used for ``--plain`` and non-TTY."""
     report = build_report(state)
     lines: list[str] = []
-    lines.append(f"unclog {report['unclog_version']}  |  schema {report['schema']}")
+    lines.append(f"unclog {report['unclog_version']}")
     lines.append(f"claude_home: {report['claude_home']}")
     lines.append("")
     baseline = report["baseline"]
-    lines.append(
-        f"baseline: ~{baseline['estimated_tokens']:,} tokens  "
-        f"[{baseline['tier']}]  ({baseline['tokens_source']})"
-    )
-    if baseline.get("unmeasured_sources"):
-        lines.append(
-            f"  ({baseline['unmeasured_sources']} MCP source(s) unmeasured - "
-            f"open them in Claude Code to record a session)"
-        )
+    lines.append(f"baseline: ~{baseline['estimated_tokens']:,} tokens")
     lines.append("")
     inv = report["inventory"]
     lines.append(
@@ -751,13 +743,6 @@ def render_plain(state: InstallationState) -> str:
         f"{_mcp_label(inv)} | {_hooks_label(inv)} | "
         f"{inv['projects_known']} known projects"
     )
-    if report["projects_audited"]:
-        lines.append("")
-        lines.append("projects audited:")
-        for project in report["projects_audited"]:
-            missing = " (missing)" if not project["exists"] else ""
-            ci = " .claudeignore" if project["has_claudeignore"] else ""
-            lines.append(f"  - {project['name']}{missing}{ci}  {project['path']}")
     if report["composition"]:
         lines.append("")
         lines.append("composition (largest first):")
@@ -831,7 +816,9 @@ def render_rich(
         console.print(render_treemap(report["composition"]))
     console.print("")
     console.print(_render_inventory_chips(inv))
-    _render_findings_rich(report["findings"], console)
+    curate = build_curate_findings(state)
+    _render_findings_rich(report["findings"], console, curate_findings=curate)
+    _render_also_running(state, report["findings"], console)
     if report["warnings"]:
         console.print("")
         for warning in report["warnings"]:
@@ -886,15 +873,60 @@ def _render_inventory_chips(inv: dict[str, int]) -> Text:
     return text
 
 
+def _curate_breakdown(n_agents: int, n_skills: int, n_mcps: int = 0) -> str:
+    """Return ``N agents, M skills, K remote MCPs`` with zero-category terms omitted."""
+    parts: list[str] = []
+    if n_agents:
+        parts.append(f"{n_agents} agent{'s' if n_agents != 1 else ''}")
+    if n_skills:
+        parts.append(f"{n_skills} skill{'s' if n_skills != 1 else ''}")
+    if n_mcps:
+        parts.append(f"{n_mcps} remote MCP{'s' if n_mcps != 1 else ''}")
+    return ", ".join(parts)
+
+
+def _render_curate_clause(
+    console: Console,
+    *,
+    n_agents: int,
+    n_skills: int,
+    n_mcps: int,
+    total: int,
+    standalone: bool,
+) -> None:
+    """Render a standalone curate-count line for the zero-findings path.
+
+    When there are detector findings, the curate count rides on the same
+    summary line. With zero findings we still want to pre-announce the
+    curate step so the ``No issues found`` message isn't immediately
+    followed by a surprise 179-row picker.
+    """
+    if not standalone or total == 0:
+        return
+    detail = _curate_breakdown(n_agents, n_skills, n_mcps)
+    line = Text()
+    line.append(f"{total}", style=f"bold {ACCENT}")
+    line.append(" to curate", style=DIM)
+    if detail:
+        line.append(f" ({detail})", style=DIM)
+    console.print(line)
+
+
 _INFORMATIONAL_GROUP_LABEL: dict[str, str] = {
-    "missing_claudeignore": "missing .claudeignore",
+    "missing_claudeignore": "projects let Claude scan node_modules/.venv (no .claudeignore)",
     "disabled_plugin_residue": "recently-disabled plugin residue",
     "claude_md_dead_ref": "CLAUDE.md dead references",
     "heavy_hook": "every-turn hooks",
+    "failed_mcp_probe": "MCP servers failed to start",
 }
 
 
-def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> None:
+def _render_findings_rich(
+    findings: list[dict[str, Any]],
+    console: Console,
+    *,
+    curate_findings: list[Finding] | None = None,
+) -> None:
     """Print a one-line summary + grouped informational hints.
 
     The picker is the real findings UI — it shows every removable item
@@ -903,12 +935,31 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
     the picker can't show, grouped by type so we don't emit nine nearly
     identical lines when every project is missing a ``.claudeignore``.
 
+    When ``curate_findings`` is non-empty, the summary tacks on a second
+    clause (``179 items to curate (157 agents, 22 skills)``) so the
+    user sees the full decision surface — detector issues + the
+    curate-step inventory — before the picker opens. Prevents the
+    surprise of a second picker appearing after "step 1 of 1" finishes.
+
     ``--report``/``--plain`` paths route through :func:`render_plain`
     instead and never hit this renderer.
     """
     console.print("")
+    curate_findings = curate_findings or []
+    n_curate_agents = sum(1 for f in curate_findings if f.type == "agent_inventory")
+    n_curate_skills = sum(1 for f in curate_findings if f.type == "skill_inventory")
+    n_curate_mcps = sum(1 for f in curate_findings if f.type == "unmeasured_mcp")
+
     if not findings:
-        console.print(f"[{SEVERITY_LEAN}]✓[/{SEVERITY_LEAN}] [dim]No issues found.[/dim]")
+        console.print(f"[{SEVERITY_OK}]✓[/{SEVERITY_OK}] [dim]No issues found.[/dim]")
+        _render_curate_clause(
+            console,
+            n_agents=n_curate_agents,
+            n_skills=n_curate_skills,
+            n_mcps=n_curate_mcps,
+            total=len(curate_findings),
+            standalone=True,
+        )
         return
 
     removable = [f for f in findings if f.get("action", {}).get("primitive") != "flag_only"]
@@ -920,7 +971,7 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
     summary.append(" issue(s)", style=DIM)
     if removable:
         summary.append("  ·  ", style=DIM)
-        summary.append(f"{len(removable)}", style=f"bold {SEVERITY_LEAN}")
+        summary.append(f"{len(removable)}", style=f"bold {SEVERITY_OK}")
         summary.append(" removable", style=DIM)
         if removable_tokens:
             summary.append(f" (~{removable_tokens:,} tok)", style=DIM)
@@ -928,6 +979,13 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
         summary.append("  ·  ", style=DIM)
         summary.append(f"{len(informational)}", style=DIM)
         summary.append(" informational", style=DIM)
+    if curate_findings:
+        summary.append("  ·  ", style=DIM)
+        summary.append(f"{len(curate_findings)}", style=f"bold {ACCENT}")
+        summary.append(" to curate", style=DIM)
+        detail = _curate_breakdown(n_curate_agents, n_curate_skills, n_curate_mcps)
+        if detail:
+            summary.append(f" ({detail})", style=DIM)
     console.print(summary)
 
     if not informational:
@@ -951,15 +1009,107 @@ def _render_findings_rich(findings: list[dict[str, Any]], console: Console) -> N
         console.print(row)
 
 
+def _render_also_running(
+    state: InstallationState,
+    findings: list[dict[str, Any]],
+    console: Console,
+) -> None:
+    """Acknowledge MCPs and hooks we saw but chose not to flag.
+
+    Without this, a heavily-used MCP like ``Roblox_Studio`` appears in
+    the composition block (because it contributes ~5k tokens) but is
+    silent in the findings — users reasonably wonder why. Same for sound
+    hooks that don't fire every turn. Listing them here closes the loop:
+    "we saw these, they're working as intended, no action needed."
+
+    Duplicate-safe: skips any server/hook already surfaced in
+    ``findings`` so users never see the same name twice across the
+    findings summary and the footer.
+    """
+    flagged_mcp_names: set[str] = set()
+    for f in findings:
+        server = f.get("action", {}).get("server_name")
+        if isinstance(server, str):
+            flagged_mcp_names.add(server)
+
+    # MCPs: probed OK + has invocations → working as intended.
+    invocations = state.global_scope.mcp_invocations
+    probes = state.global_scope.mcp_probes or {}
+    mcp_rows: list[tuple[str, int, int]] = []
+    for name, probe in probes.items():
+        if not probe.ok or name in flagged_mcp_names:
+            continue
+        count = invocations.get(name, 0)
+        if count <= 0:
+            continue
+        mcp_rows.append((name, count, probe.tools_tokens))
+    mcp_rows.sort(key=lambda r: (-r[1], r[0]))
+
+    # Hooks: anything flagged as heavy_hook is already in the findings
+    # summary, so we skip those commands and show the rest.
+    heavy_cmds: set[str] = set()
+    for f in findings:
+        if f.get("type") != "heavy_hook":
+            continue
+        evidence = f.get("evidence") or {}
+        cmd = evidence.get("command")
+        if isinstance(cmd, str):
+            heavy_cmds.add(cmd)
+
+    hook_rows: list[tuple[str, str]] = []
+    gs = state.global_scope
+    if gs.settings is not None:
+        for hook in gs.settings.hooks:
+            if hook.command in heavy_cmds:
+                continue
+            hook_rows.append((hook.event, "global"))
+    for project in state.project_scopes:
+        for hook in project.hooks:
+            if hook.command in heavy_cmds:
+                continue
+            hook_rows.append((hook.event, hook.source_scope))
+
+    if not mcp_rows and not hook_rows:
+        return
+
+    console.print("")
+    header = Text("also running", style=DIM)
+    header.append(" (no action needed)", style=DIM)
+    console.print(header)
+
+    for name, count, tokens in mcp_rows:
+        row = Text()
+        row.append("  · ", style=DIM)
+        row.append("mcp ", style=f"bold {_INVENTORY_CHIP_COLOUR['mcp']}")
+        row.append(name, style="default")
+        row.append(f"  {count:,} invocations", style=DIM)
+        if tokens:
+            row.append(f", ~{tokens:,} tok/session", style=DIM)
+        console.print(row)
+
+    for event, source_scope in hook_rows:
+        row = Text()
+        row.append("  · ", style=DIM)
+        row.append("hook ", style=f"bold {_INVENTORY_CHIP_COLOUR['hooks']}")
+        row.append(event, style="default")
+        row.append(f"  ({source_scope})", style=DIM)
+        console.print(row)
+
+
 def _short_name(finding: dict[str, Any]) -> str:
     """Extract a terse identifier for a finding used in grouped lists."""
     from pathlib import Path as _P
 
+    action = finding.get("action", {})
+    # Server-level findings (unmeasured_mcp, failed_mcp_probe, …) must
+    # surface the *server* name, not the project that declared them.
+    server_name = action.get("server_name")
+    if server_name:
+        return str(server_name)
     scope = finding.get("scope", {})
     project_path = scope.get("project_path")
     if project_path:
         return _P(project_path).name
-    action = finding.get("action", {})
     plugin_key = action.get("plugin_key")
     if plugin_key:
         return str(plugin_key)

@@ -62,6 +62,7 @@ def scan_project(
     project_path: Path,
     *,
     memory_file: Path | None = None,
+    claude_home: Path | None = None,
 ) -> ProjectScope:
     """Scan a single project directory into a :class:`ProjectScope`.
 
@@ -98,7 +99,7 @@ def scan_project(
     memory_path = memory_file if memory_file is not None else Path()
     memory_text = _read_text_if_exists(memory_path) if memory_file is not None else ""
 
-    hooks = _load_project_hooks(resolved) if exists else ()
+    hooks = _load_project_hooks(resolved, claude_home=claude_home) if exists else ()
 
     return ProjectScope(
         path=resolved,
@@ -118,16 +119,32 @@ def scan_project(
     )
 
 
-def _load_project_hooks(project_path: Path) -> tuple[Hook, ...]:
+def _load_project_hooks(
+    project_path: Path,
+    *,
+    claude_home: Path | None = None,
+) -> tuple[Hook, ...]:
     """Parse hooks from ``<project>/.claude/settings.json`` + ``settings.local.json``.
 
     Both files are optional. Unparseable JSON is swallowed — a hook
     scanner should not be the thing that crashes a scan. Returns an
     empty tuple when nothing is configured.
+
+    When the project path is ``$HOME`` (or anywhere whose ``.claude/``
+    resolves to the same directory as ``claude_home``), the "project"
+    settings file *is* the global settings file. Skip it to avoid
+    double-counting — the global scanner already picked those hooks up.
     """
+    project_claude_dir = project_path / ".claude"
+    if claude_home is not None:
+        try:
+            if project_claude_dir.resolve(strict=False) == claude_home.resolve(strict=False):
+                return ()
+        except OSError:
+            pass
     collected: list[Hook] = []
     for filename in ("settings.json", "settings.local.json"):
-        settings_path = project_path / ".claude" / filename
+        settings_path = project_claude_dir / filename
         try:
             settings = load_settings(settings_path, source_scope="project")
         except ConfigParseError:

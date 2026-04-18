@@ -42,6 +42,7 @@ def _make_state(
     activity: ActivityIndex | None = None,
     project_scopes: tuple = (),
     mcp_probes: dict | None = None,  # type: ignore[type-arg]
+    mcp_invocations: dict[str, int] | None = None,
 ) -> InstallationState:
     from types import MappingProxyType
 
@@ -62,6 +63,7 @@ def _make_state(
             latest_session=latest_session,
             activity=activity if activity is not None else ActivityIndex(),
             mcp_probes=MappingProxyType(mcp_probes or {}),
+            mcp_invocations=MappingProxyType(mcp_invocations or {}),
         ),
         project_scopes=project_scopes,
         warnings=warnings,
@@ -75,7 +77,6 @@ def test_build_report_schema_fields() -> None:
     assert report["generated_at"] == "2026-04-17T18:42:00Z"
     assert report["claude_home"] == "/fake/.claude"
     assert report["baseline"]["tokens_source"] in {"tiktoken", "session+tiktoken"}
-    assert report["baseline"]["tier"] in {"lean", "typical", "clogged"}
     assert report["findings"] == []
 
 
@@ -408,6 +409,64 @@ def test_render_plain_surfaces_heavy_hook_informational_finding() -> None:
     state = _make_state(settings=settings)
     out = render_plain(state)
     assert "heavy_hook" in out or "SessionStart hook fires every prompt" in out
+
+
+def test_render_rich_also_running_lists_used_mcp_and_non_heavy_hooks() -> None:
+    """Used MCPs + sound-level hooks surface in the 'also running' footer.
+
+    Without this, a heavily-used MCP like ``Roblox_Studio`` appears in
+    the composition block but is silent in findings — leaving the user
+    to wonder whether unclog even saw it. The footer is the explicit
+    acknowledgement that yes, we saw it, and it's working as intended.
+    """
+    from io import StringIO
+    from types import MappingProxyType
+
+    from rich.console import Console
+
+    from unclog.scan.mcp_probe import ProbeResult
+    from unclog.ui.output import render_rich
+
+    stdio = McpServer(
+        name="Roblox_Studio",
+        command="/path/cmd",
+        raw=MappingProxyType({"type": "stdio", "command": "/path/cmd"}),
+    )
+    config = ClaudeConfig(mcp_servers=MappingProxyType({"Roblox_Studio": stdio}))
+    settings = Settings(
+        hooks=(_hook_record("Stop", "afplay /System/Library/Sounds/Purr.aiff"),)
+    )
+    probes = {"Roblox_Studio": ProbeResult(name="Roblox_Studio", ok=True, tool_count=18, tools_tokens=5371)}
+    state = _make_state(
+        config=config,
+        settings=settings,
+        mcp_probes=probes,
+        mcp_invocations={"Roblox_Studio": 324},
+    )
+    buf = StringIO()
+    console = Console(file=buf, width=120, force_terminal=True, record=True)
+    render_rich(state, console, show_wordmark=False)
+    out = console.export_text()
+    assert "also running" in out
+    assert "Roblox_Studio" in out
+    assert "324 invocations" in out
+    assert "Stop" in out
+
+
+def test_render_rich_also_running_skips_when_empty() -> None:
+    """No used MCPs and no hooks → no 'also running' block at all."""
+    from io import StringIO
+
+    from rich.console import Console
+
+    from unclog.ui.output import render_rich
+
+    state = _make_state()
+    buf = StringIO()
+    console = Console(file=buf, width=120, force_terminal=True, record=True)
+    render_rich(state, console, show_wordmark=False)
+    out = console.export_text()
+    assert "also running" not in out
 
 
 def test_projects_audited_includes_claude_md_token_counts(

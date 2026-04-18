@@ -7,7 +7,7 @@ three tick values are ``before → midpoint → after`` (matching the spec's
 
 Static fallback: when animation is disabled (``--no-animation``,
 non-TTY), the countdown prints a single line showing both numbers with
-an arrow between them, coloured by the post-apply tier.
+an arrow between them.
 """
 
 from __future__ import annotations
@@ -18,8 +18,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.text import Text
 
-from unclog.state import tier_for_baseline
-from unclog.ui.theme import DIM, tier_style
+from unclog.ui.theme import ACCENT, DIM
 
 TOTAL_DURATION_S = 0.4
 STEPS = 3  # before → midpoint → after
@@ -27,24 +26,18 @@ REFRESH_PER_SECOND = 30
 
 
 def _render_line(value: int) -> Text:
-    style = tier_style(tier_for_baseline(value))
     line = Text()
     line.append("Baseline: ", style="bold")
-    line.append(f"{value:,}", style=f"bold {style.colour}")
-    line.append("  ")
-    line.append(style.label, style=DIM)
+    line.append(f"{value:,}", style=f"bold {ACCENT}")
     return line
 
 
 def _render_static(before: int, after: int) -> Text:
-    style = tier_style(tier_for_baseline(after))
     line = Text()
     line.append("Baseline: ", style="bold")
     line.append(f"{before:,}", style=DIM)
     line.append(" → ")
-    line.append(f"{after:,}", style=f"bold {style.colour}")
-    line.append("  ")
-    line.append(style.label, style=DIM)
+    line.append(f"{after:,}", style=f"bold {ACCENT}")
     return line
 
 

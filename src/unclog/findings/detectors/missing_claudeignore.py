@@ -6,9 +6,11 @@ means Claude Code may traverse thousands of files it has no business
 reading. Flag-only (spec §6, §6.1) — we do not ship a default
 ``.claudeignore`` in v0.1; the user writes their own.
 
-Project list comes from ``~/.claude.json``'s ``projects`` map. Stale
-entries (paths that no longer exist on disk) are skipped silently so
-we don't nag about removed projects.
+Iterates ``state.project_scopes`` — the post-narrowed project set —
+so ``--project PATH`` correctly scopes the detector to the single
+project the user asked about (spec §8.1). Stale entries (paths that
+no longer exist on disk) are skipped silently so we don't nag about
+removed projects.
 """
 
 from __future__ import annotations
@@ -31,34 +33,30 @@ def detect(
     *,
     now: datetime,
 ) -> list[Finding]:
-    config = state.global_scope.config
-    if config is None or not config.projects:
-        return []
-
     findings: list[Finding] = []
-    for project_path in sorted(config.projects):
-        if not project_path.is_dir():
+    for project in sorted(state.project_scopes, key=lambda p: p.path):
+        if not project.exists:
             continue
-        if (project_path / ".claudeignore").exists():
+        if project.has_claudeignore:
             continue
-        trigger = _first_matching_subdir(project_path)
+        trigger = _first_matching_subdir(project.path)
         if trigger is None:
             continue
         findings.append(
             Finding(
-                id=f"missing_claudeignore:{project_path}",
+                id=f"missing_claudeignore:{project.path}",
                 type="missing_claudeignore",
-                title=f"Add .claudeignore to {project_path.name}",
+                title=f"Add .claudeignore to {project.name}",
                 reason=f"project contains {trigger}/ but no .claudeignore",
-                scope=Scope(kind="project", project_path=project_path),
+                scope=Scope(kind="project", project_path=project.path),
                 action=Action(
                     primitive="flag_only",
-                    path=project_path / ".claudeignore",
+                    path=project.path / ".claudeignore",
                 ),
                 auto_checked=False,
                 token_savings=None,
                 evidence={
-                    "project_path": str(project_path),
+                    "project_path": str(project.path),
                     "triggering_subdir": trigger,
                     "note": (
                         "v0.1 does not auto-generate .claudeignore; user writes "

@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
 
 from unclog.scan.config import ClaudeConfig, Settings
 from unclog.scan.filesystem import Agent, Command, InstalledPlugin, PluginContent, Skill
@@ -20,26 +19,6 @@ from unclog.scan.mcp_probe import ProbeResult
 from unclog.scan.project import ProjectScope
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
-
-BaselineTier = Literal["lean", "typical", "clogged"]
-
-TIER_LEAN_UPPER_BOUND = 20_000
-TIER_CLOGGED_LOWER_BOUND = 50_000
-
-
-def tier_for_baseline(tokens: int) -> BaselineTier:
-    """Classify an estimated baseline token count into a tier.
-
-    Thresholds (spec section 11.5):
-    - ``< 20,000`` -> ``lean``
-    - ``20,000 - 50,000`` -> ``typical``
-    - ``> 50,000`` -> ``clogged``
-    """
-    if tokens < TIER_LEAN_UPPER_BOUND:
-        return "lean"
-    if tokens > TIER_CLOGGED_LOWER_BOUND:
-        return "clogged"
-    return "typical"
 
 
 @dataclass(frozen=True)

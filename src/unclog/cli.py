@@ -70,11 +70,6 @@ def root(
         "--report",
         help="Scan and report, then exit without running the interactive fix flow.",
     ),
-    dry_run: bool = typer.Option(
-        False,
-        "--dry-run",
-        help="Run the interactive flow without writing files or creating a snapshot.",
-    ),
     yes: bool = typer.Option(
         False,
         "--yes",
@@ -109,16 +104,13 @@ def root(
 
     The default mode prints the report, then (if findings exist and
     stdout is a TTY) walks through the interactive fix selector.
-    ``--report``, ``--json``, and ``--plain`` all suppress the fix
-    flow. ``--dry-run`` runs prompts but writes nothing; ``--yes``
+    --report, --json, and --plain all suppress the fix flow. --yes
     skips prompts and applies auto-checked findings only.
     """
     if ctx.invoked_subcommand is not None:
         return
-    if dry_run and yes:
-        raise typer.BadParameter("--dry-run and --yes are mutually exclusive")
-    if report_only and (dry_run or yes):
-        raise typer.BadParameter("--report cannot be combined with --dry-run or --yes")
+    if report_only and yes:
+        raise typer.BadParameter("--report cannot be combined with --yes")
 
     display = DisplayOptions.resolve(
         as_json=as_json,
@@ -153,7 +145,6 @@ def root(
     _launch_interactive(
         state,
         console=console,
-        dry_run=dry_run,
         yes=yes,
         no_animation=no_animation,
     )
@@ -163,12 +154,12 @@ def _launch_interactive(
     state: InstallationState,
     *,
     console: Console,
-    dry_run: bool,
     yes: bool,
     no_animation: bool,
 ) -> None:
     """Gate the interactive fix flow behind the scan + findings layer."""
     from unclog.findings import detect, load_thresholds
+    from unclog.findings.curate import build_curate_findings
 
     paths = claude_paths()
     thresholds = load_thresholds(paths.config_toml)
@@ -178,7 +169,8 @@ def _launch_interactive(
         thresholds,
         now=state.generated_at,
     )
-    if not findings:
+    curate_findings = build_curate_findings(state)
+    if not findings and not curate_findings:
         return
     project_paths = tuple(p.path for p in state.project_scopes if p.exists)
     run_interactive(
@@ -187,11 +179,11 @@ def _launch_interactive(
         project_paths=project_paths,
         console=console,
         options=InteractiveOptions(
-            dry_run=dry_run,
             yes=yes,
             no_animation=no_animation,
         ),
         baseline_tokens=baseline_tokens(state),
+        curate_findings=curate_findings,
     )
 
 
@@ -207,11 +199,11 @@ def restore(
         help="List every snapshot without restoring.",
     ),
 ) -> None:
-    """Restore a previous ``unclog`` snapshot.
+    """Restore a previous unclog snapshot.
 
-    With no arguments, ``unclog restore`` restores the most recent
-    snapshot. ``unclog restore <id>`` targets a specific one.
-    ``unclog restore --list`` enumerates every snapshot on disk.
+    With no arguments, 'unclog restore' restores the most recent
+    snapshot. 'unclog restore <id>' targets a specific one.
+    'unclog restore --list' enumerates every snapshot on disk.
     """
     paths = claude_paths()
     console = Console()

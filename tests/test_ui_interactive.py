@@ -120,27 +120,6 @@ def test_interactive_accepts_and_applies(tmp_path: Path) -> None:
     assert len(result.succeeded) == 1
 
 
-def test_interactive_dry_run_skips_apply(tmp_path: Path) -> None:
-    skill_md = tmp_path / "skills" / "g" / "SKILL.md"
-    skill_md.parent.mkdir(parents=True)
-    skill_md.write_text("body\n", encoding="utf-8")
-    finding = _f("a", "delete_file", path=skill_md)
-    prompter = FakePrompter(
-        confirm_answers=[True],
-        multiselect_answer=[finding],
-    )
-    result = run_interactive(
-        [finding],
-        claude_home=tmp_path,
-        project_paths=(),
-        console=Console(record=True),
-        options=InteractiveOptions(dry_run=True),
-        prompter=prompter,
-    )
-    assert result is None
-    assert skill_md.exists()  # dry-run: file untouched
-
-
 def test_interactive_yes_applies_only_auto_checked(tmp_path: Path) -> None:
     a_md = tmp_path / "skills" / "a" / "SKILL.md"
     a_md.parent.mkdir(parents=True)
@@ -254,3 +233,96 @@ def test_interactive_yes_with_no_auto_checked_is_noop(tmp_path: Path) -> None:
     )
     assert result is None
     assert b_md.exists()
+
+
+def _curate_finding(path: Path, ftype: str = "agent_inventory", tokens: int = 42) -> Finding:
+    return Finding(
+        id=f"{ftype}:{path.stem}",
+        type=ftype,  # type: ignore[arg-type]
+        title=f"curate {path.stem}",
+        reason="r",
+        scope=Scope(kind="global"),
+        action=Action(primitive="delete_file", path=path),
+        auto_checked=False,
+        token_savings=tokens,
+    )
+
+
+def test_interactive_offers_curate_prompt_and_skips_on_no(tmp_path: Path) -> None:
+    agent_md = tmp_path / "agents" / "foo.md"
+    agent_md.parent.mkdir(parents=True)
+    agent_md.write_text("a\n", encoding="utf-8")
+    curate = [_curate_finding(agent_md)]
+    prompter = FakePrompter(confirm_answers=[False])  # decline curate
+    result = run_interactive(
+        [],
+        claude_home=tmp_path,
+        project_paths=(),
+        console=Console(record=True),
+        options=InteractiveOptions(),
+        prompter=prompter,
+        curate_findings=curate,
+    )
+    assert result is None
+    assert agent_md.exists()
+    # The single confirm call was the curate offer prompt.
+    assert len(prompter.confirm_calls) == 1
+    assert "Review" in prompter.confirm_calls[0]
+
+
+def test_interactive_curate_yes_applies_selected_items(tmp_path: Path) -> None:
+    agent_md = tmp_path / "agents" / "foo.md"
+    agent_md.parent.mkdir(parents=True)
+    agent_md.write_text("a\n", encoding="utf-8")
+    curate = [_curate_finding(agent_md)]
+    # confirm: [yes to curate offer, yes to apply confirmation]
+    prompter = FakePrompter(
+        confirm_answers=[True, True],
+        multiselect_answer=curate,
+    )
+    result = run_interactive(
+        [],
+        claude_home=tmp_path,
+        project_paths=(),
+        console=Console(record=True),
+        options=InteractiveOptions(),
+        prompter=prompter,
+        curate_findings=curate,
+    )
+    assert result is not None
+    assert len(result.succeeded) == 1
+    assert not agent_md.exists()
+
+
+def test_interactive_yes_mode_does_not_run_curate(tmp_path: Path) -> None:
+    """--yes is for detector-driven auto-apply; curate is always hand-picked."""
+    agent_md = tmp_path / "agents" / "foo.md"
+    agent_md.parent.mkdir(parents=True)
+    agent_md.write_text("a\n", encoding="utf-8")
+    curate = [_curate_finding(agent_md)]
+    prompter = FakePrompter()
+    result = run_interactive(
+        [],
+        claude_home=tmp_path,
+        project_paths=(),
+        console=Console(record=True),
+        options=InteractiveOptions(yes=True),
+        prompter=prompter,
+        curate_findings=curate,
+    )
+    assert result is None
+    assert agent_md.exists()
+    assert prompter.confirm_calls == []
+
+
+def test_interactive_returns_none_when_no_findings_and_no_curate(tmp_path: Path) -> None:
+    result = run_interactive(
+        [],
+        claude_home=tmp_path,
+        project_paths=(),
+        console=Console(record=True),
+        options=InteractiveOptions(),
+        prompter=FakePrompter(),
+        curate_findings=[],
+    )
+    assert result is None

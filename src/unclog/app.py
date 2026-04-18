@@ -190,7 +190,9 @@ def _scan_projects(
     Without ``--project``, every known project in ``~/.claude.json`` is
     audited so cross-project CLAUDE.md dupes and scope-mismatch findings
     actually surface. Stale entries (paths that no longer exist on disk)
-    are reported as warnings rather than scanned silently.
+    are skipped silently — Claude Code keeps every directory you've ever
+    opened in that map, and a deleted project isn't an issue worth
+    nagging the user about.
     """
     known = tuple(scope.config.projects) if scope.config else ()
     narrowed = project is not None
@@ -201,17 +203,24 @@ def _scan_projects(
     )
     paths = claude_paths()
     scopes: list[ProjectScope] = []
-    stale_count = 0
     for target in targets:
-        scoped = scan_project(target, memory_file=paths.project_memory_file(target))
-        if not scoped.exists and not narrowed:
-            stale_count += 1
-        scopes.append(scoped)
-    if stale_count:
-        warnings.append(
-            f"{stale_count} known project path(s) no longer exist on disk "
-            f"(run with --list-claude-md for details)"
+        scoped = scan_project(
+            target,
+            memory_file=paths.project_memory_file(target),
+            claude_home=paths.home,
         )
+        if not scoped.exists and narrowed:
+            # Explicit --project PATH with a missing directory is almost
+            # always a typo. Surface it loudly rather than scanning an
+            # empty scope and calling it "clean". Stale entries from
+            # ``~/.claude.json``'s ``projects{}`` map when we're *not*
+            # narrowed are silently skipped — they're a quirk of how
+            # Claude Code records every directory you've ever opened
+            # and have no bearing on the user's baseline.
+            warnings.append(
+                f"--project path does not exist on disk: {scoped.path}"
+            )
+        scopes.append(scoped)
     return tuple(scopes)
 
 

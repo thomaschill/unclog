@@ -19,11 +19,10 @@ from types import MappingProxyType
 from typing import Any, Literal
 
 FindingType = Literal[
-    "unused_skill",
-    "unused_agent",
-    "unused_command",
     "dead_mcp",
     "unused_mcp",
+    "failed_mcp_probe",
+    "unmeasured_mcp",
     "stale_plugin",
     "disabled_plugin_residue",
     "claude_md_dead_ref",
@@ -33,6 +32,10 @@ FindingType = Literal[
     "scope_mismatch_project_to_global",
     "missing_claudeignore",
     "heavy_hook",
+    # Curate-picker inventory types: one Finding per local agent/skill,
+    # surfaced via the opt-in secondary picker. Not emitted by detectors.
+    "agent_inventory",
+    "skill_inventory",
 ]
 
 ScopeKind = Literal["global", "project", "global_to_project", "project_to_global"]
@@ -100,7 +103,7 @@ class Finding:
 
     ``id`` is the stable identifier used in snapshots and JSON output.
     Convention: ``<type>:<slug-or-key>`` so it is human-readable in logs
-    (e.g. ``unused_skill:fashion-trend-analyst``).
+    (e.g. ``unused_mcp:notion``).
 
     ``token_savings`` is the detector's best estimate of the tokens that
     would be recovered by applying the action, or ``None`` if not

@@ -26,14 +26,12 @@ from unclog.findings.detectors import (
     claude_md_oversized,
     dead_mcp,
     disabled_plugin_residue,
+    failed_mcp_probe,
     heavy_hook,
     missing_claudeignore,
     scope_mismatch,
     stale_plugin,
-    unused_agent,
-    unused_command,
     unused_mcp,
-    unused_skill,
 )
 from unclog.findings.thresholds import Thresholds, load_thresholds
 from unclog.scan.stats import ActivityIndex
@@ -62,17 +60,22 @@ def detect(
     Detectors each produce their findings sorted by token savings
     descending within type; the final list preserves the order detectors
     are invoked in (largest-impact categories first: MCPs, plugins,
-    commands, agents, skills, residue flags).
+    CLAUDE.md issues, residue flags).
+
+    v0.1 intentionally does not flag unused agents/commands/skills:
+    we cannot reliably distinguish "never used" from "not used lately"
+    (Claude dispatches agents via the Task tool without leaving
+    @-mention fingerprints the way slash-commands do). Instead, the
+    composition block shows the total token cost per category and
+    lets the user decide.
     """
     reference = now if now is not None else datetime.now(tz=UTC)
     context = build_context(state)
     findings: list[Finding] = []
     findings.extend(dead_mcp.detect(state, activity, thresholds, now=reference))
     findings.extend(unused_mcp.detect(state, activity, thresholds, now=reference))
+    findings.extend(failed_mcp_probe.detect(state, activity, thresholds, now=reference))
     findings.extend(stale_plugin.detect(state, activity, thresholds, now=reference))
-    findings.extend(unused_command.detect(state, activity, thresholds, now=reference))
-    findings.extend(unused_agent.detect(state, activity, thresholds, now=reference))
-    findings.extend(unused_skill.detect(state, activity, thresholds, now=reference))
     findings.extend(
         claude_md_duplicate.detect(
             state, activity, thresholds, now=reference, context=context

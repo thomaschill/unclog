@@ -1,9 +1,9 @@
 """Hero baseline number and composition top-contributors (spec §11.5, §11.6).
 
-The hero is the first thing a user sees: one dense line with the
-comma-formatted token count, tier label, and measurement provenance.
-Immediately below, a compact list of the top composition contributors
-gives the user the 3-5 biggest consumers of their baseline at a glance.
+The hero is the first thing a user sees: one plain-English line stating
+the baseline token cost. Immediately below, a compact list of the top
+composition contributors gives the user the 3-5 biggest consumers of
+their baseline at a glance.
 
 Everything in this module returns Rich renderables — never writes to
 stdout. The caller (``ui.output.render_default``) decides how/where to
@@ -14,53 +14,30 @@ from __future__ import annotations
 
 from typing import Any
 
-from rich.console import RenderableType
+from rich.console import Group, RenderableType
 from rich.text import Text
 
-from unclog.state import BaselineTier
-from unclog.ui.theme import DIM, gradient_colour, tier_style
+from unclog.ui.chrome import rounded_panel
+from unclog.ui.theme import ACCENT, DIM, gradient_colour
 
 # Kept for API stability; the stacked-bar treemap was removed but callers
 # still pass ``width`` for historical reasons.
 DEFAULT_TREEMAP_WIDTH = 76
 
 
-def _provenance(baseline: dict[str, Any]) -> str:
-    source = baseline.get("tokens_source", "unknown")
-    unmeasured = baseline.get("unmeasured_sources", 0)
-    attributed = baseline.get("attributed_tokens", 0)
-    total = baseline.get("estimated_tokens", 0)
-    parts: list[str] = []
-
-    if source == "session+tiktoken":
-        parts.append("from latest session")
-    elif source == "tiktoken":
-        parts.append("from files (no session yet)")
-    else:
-        parts.append(source)
-
-    if total and attributed and attributed < total:
-        other = total - attributed
-        parts.append(f"{other:,} tok unattributed")
-
-    if unmeasured:
-        parts.append(f"{unmeasured} MCP unmeasured")
-
-    return "  ·  ".join(parts)
-
-
 def render_hero(baseline: dict[str, Any]) -> RenderableType:
-    """Return the hero block: one dense line with number, tier, and provenance."""
+    """Return the hero block: ``N,NNN tokens in your Claude Code baseline``.
+
+    Provenance (session vs filesystem, how many MCPs are unmeasured) was
+    removed from the hero in the v0.1 UX pass: the composition block
+    below already shows which sources are measured and which read ``—``,
+    so repeating that signal in the hero adds jargon without clarity.
+    """
     tokens = int(baseline.get("estimated_tokens") or 0)
-    tier: BaselineTier = baseline.get("tier", "lean")
-    style = tier_style(tier)
 
     line = Text()
-    line.append(f"{tokens:,}", style=f"bold {style.colour}")
-    line.append(" tokens  ", style=DIM)
-    line.append(style.label, style=style.colour)
-    line.append("   ·   ", style=DIM)
-    line.append(_provenance(baseline), style=DIM)
+    line.append(f"{tokens:,}", style=f"bold {ACCENT}")
+    line.append(" tokens in your Claude Code baseline", style=DIM)
     return line
 
 
@@ -109,3 +86,29 @@ def render_treemap(
         legend.append("\n")
         legend.append(f"  +{hidden} more  {hidden_total:,} tok", style=DIM)
     return legend
+
+
+def render_baseline_panel(
+    baseline: dict[str, Any],
+    composition: list[dict[str, Any]],
+) -> RenderableType:
+    """Return the hero + composition block wrapped in a rounded panel.
+
+    Panel title is ``baseline``; the right-aligned subtitle carries the
+    provenance of the headline number (``session+tiktoken``, ``tiktoken``,
+    or ``empty``). That puts the "how was this number derived" answer
+    directly on the chrome, next to the number itself, rather than
+    forcing the user to cross-reference the JSON output.
+
+    When the composition is empty (fresh install, no measurable sources)
+    the panel still renders with just the hero line — the empty state
+    reads as "we scanned; nothing to show" rather than an absent panel.
+    """
+    hero = render_hero(baseline)
+
+    if composition:
+        body: RenderableType = Group(hero, Text(""), render_treemap(composition))
+    else:
+        body = hero
+
+    return rounded_panel(body, title="baseline")
