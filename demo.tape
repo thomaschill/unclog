@@ -59,7 +59,45 @@ Sleep 300ms
 Enter
 Sleep 900ms
 
-# Step 2 curate confirm: "Review N agent(s) + skill(s) + remote MCP(s)…? [y/N]" — decline
+# Step 2 prompt: "Review N agent(s) + skill(s) + remote MCP(s)…? [y/N]" — enter
+Type "y"
+Sleep 300ms
+Enter
+
+# Wait for curate picker (~200 rows) to mount
+Sleep 2s
+
+# Drive the curate picker: scroll, toggle a few items to show the footer tick up
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Down
+Sleep 300ms
+Space
+Sleep 600ms
+
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Space
+Sleep 600ms
+
+Down
+Sleep 250ms
+Down
+Sleep 250ms
+Down
+Sleep 300ms
+Space
+Sleep 900ms
+
+# Submit the curate selection
+Enter
+Sleep 1200ms
+
+# Final "Delete N item(s)? [y/N]" — decline, nothing is written
 Type "n"
 Sleep 300ms
 Enter
