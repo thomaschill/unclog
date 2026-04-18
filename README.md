@@ -3,11 +3,18 @@
 **Every MCP, skill, hook, and CLAUDE.md line you've installed is charging you on every turn.** `unclog` scans your Claude Code install, measures the bloat, and offers a reversible fix.
 
 ```
+# install
 uv tool install unclog
+
+# run
 unclog
 ```
 
-<!-- TODO: screenshot of `unclog` finding bloat — include probed MCPs, auto-memory, and hook findings -->
+![unclog scan output](screenshot.png)
+
+## Demo
+
+![unclog interactive fix flow](demo.gif)
 
 ## What it finds
 
@@ -16,23 +23,21 @@ unclog
 | **CLAUDE.md** | oversized sections, cross-project duplicates, scope mismatches, dead file refs, broken `@`-import chains (depth ≤5) |
 | **Auto-memory** | per-project `MEMORY.md` files auto-injected into every turn |
 | **Hooks** | every-turn handlers whose stdout silently joins your context |
-| **MCP servers** | configured-but-dead, loaded-but-never-called, and — with `--probe-mcps` — live tools-schema token counts |
+| **MCP servers** | configured-but-dead, loaded-but-never-called, and — by default — live tools-schema token counts from a local stdio probe |
 | **Skills / agents / commands** | zero-invocation entries older than your `unused_days` threshold |
 | **Plugins** | stale installs and disabled-but-still-on-disk residue |
 | **Project hygiene** | missing `.claudeignore` in repos that bundle `node_modules/`, `venv/`, etc. |
-| **Baseline** | total tokens consumed before you type a message, tiered *lean* / *typical* / *clogged* |
+| **Baseline** | total tokens consumed before you type a message |
 
 ## Fixing things
 
-`unclog` never writes without a confirmed prompt. Conservative-safe findings are pre-checked; everything else defaults unchecked. A full snapshot is written to `~/.claude/.unclog/snapshots/<id>/` before any change, and every `y/N` prompt defaults to **No**.
+`unclog` never writes without a confirmed prompt. Conservative-safe findings are pre-checked; everything else defaults unchecked. A full snapshot is written to `~/.claude/.unclog/snapshots/<id>/` before any change.
 
 ```
 unclog restore               # restore the most recent snapshot
 unclog restore <id>          # restore a specific one
 unclog restore --list        # enumerate every snapshot
 ```
-
-<!-- TODO: screenshot of the fix selector -->
 
 ## Usage
 
@@ -41,10 +46,10 @@ unclog                       # scan global + every known project, report, fix
 unclog --project <path>      # narrow the audit to a single project
 unclog --report              # scan + report, skip the fix flow
 unclog --json                # structured output (schema unclog.v0.1)
-unclog --probe-mcps          # opt-in: spawn configured MCP servers to measure their tools schema
+unclog --no-probe-mcps       # skip the live MCP probe (keeps the scan read-only)
 unclog --list-claude-md      # diagnostic: list every auto-injected context file with token counts
 unclog --yes                 # apply every auto-checked finding
-unclog --dry-run             # walk the fix flow without writing
+unclog --no-animation        # disable the post-apply baseline countdown
 unclog --plain               # ASCII-only, CI-safe
 ```
 
@@ -68,8 +73,6 @@ uv run pytest
 uv run ruff check src tests
 uv run mypy src/unclog
 ```
-
-See [SPEC.md](SPEC.md) for the full data model, detector list, and config schema.
 
 ## License
 

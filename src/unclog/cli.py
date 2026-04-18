@@ -191,7 +191,7 @@ def _launch_interactive(
 def restore(
     snapshot_id: str = typer.Argument(
         "latest",
-        help="Snapshot id to restore. Use 'latest' (default) or run without an id to list.",
+        help="Snapshot id to restore. Use 'latest' (default) or pass a specific id. Use --list to enumerate.",
     ),
     list_only: bool = typer.Option(
         False,
@@ -203,7 +203,7 @@ def restore(
 
     With no arguments, 'unclog restore' restores the most recent
     snapshot. 'unclog restore <id>' targets a specific one.
-    'unclog restore --list' enumerates every snapshot on disk.
+    Pass --list to enumerate every snapshot on disk without restoring.
     """
     paths = claude_paths()
     console = Console()
