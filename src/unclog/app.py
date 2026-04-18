@@ -191,9 +191,10 @@ def _scan_projects(
         cwd=cwd,
         known_projects=known,
     )
+    paths = claude_paths()
     scopes: list[ProjectScope] = []
     for target in targets:
-        scoped = scan_project(target)
+        scoped = scan_project(target, memory_file=paths.project_memory_file(target))
         if not scoped.exists and not narrowed:
             warnings.append(f"Project path no longer exists: {target}")
         scopes.append(scoped)

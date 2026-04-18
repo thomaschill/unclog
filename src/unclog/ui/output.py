@@ -186,6 +186,24 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
             }
         )
 
+    memory_projects = [p for p in state.project_scopes if p.memory_md_text]
+    if memory_projects:
+        memory_tokens = sum(counter.count(p.memory_md_text) for p in memory_projects)
+        memory_bytes = sum(p.memory_md_bytes for p in memory_projects)
+        entries.append(
+            {
+                "source": f"auto-memory (n={len(memory_projects)})",
+                "scope": "project",
+                "bytes": memory_bytes,
+                "tokens": memory_tokens,
+                "tokens_source": "tiktoken",
+                "note": (
+                    "~/.claude/projects/<encoded>/memory/MEMORY.md files — "
+                    "auto-injected into every session prompt, truncated past ~200 lines"
+                ),
+            }
+        )
+
     session = gs.latest_session
     attribution = _mcp_attribution(session, counter) if session else {}
 
@@ -360,6 +378,10 @@ def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:
                 if project.claude_local_md_text
                 else 0
             ),
+            "memory_md_bytes": project.memory_md_bytes,
+            "memory_md_tokens": (
+                counter.count(project.memory_md_text) if project.memory_md_text else 0
+            ),
             "has_claudeignore": project.has_claudeignore,
         }
         for project in state.project_scopes
@@ -367,12 +389,14 @@ def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:
 
 
 def _claude_md_rows(state: InstallationState) -> list[dict[str, Any]]:
-    """Flat per-file rows for the CLAUDE.md listing.
+    """Flat per-file rows for the CLAUDE.md + auto-memory listing.
 
-    Includes the global ``CLAUDE.md`` / ``CLAUDE.local.md`` plus every
-    per-project CLAUDE.md pair. Missing files are reported as rows with
-    ``tokens=None`` and a ``status`` string so users can distinguish
-    "file not present" from "project path missing on disk".
+    Includes the global ``CLAUDE.md`` / ``CLAUDE.local.md``, per-project
+    CLAUDE.md pairs, and the per-project auto-memory index file Claude
+    Code persists at ``~/.claude/projects/<encoded>/memory/MEMORY.md``.
+    Missing files are reported as rows with ``tokens=None`` and a
+    ``status`` string so users can distinguish "file not present" from
+    "project path missing on disk".
     """
     counter = TiktokenCounter()
     rows: list[dict[str, Any]] = []
@@ -437,6 +461,20 @@ def _claude_md_rows(state: InstallationState) -> list[dict[str, Any]]:
                     "status": "present",
                 }
             )
+
+    for project in state.project_scopes:
+        if not project.memory_md_text:
+            continue
+        rows.append(
+            {
+                "scope": "memory",
+                "name": project.name,
+                "path": str(project.memory_md_path),
+                "tokens": counter.count(project.memory_md_text),
+                "bytes": project.memory_md_bytes,
+                "status": "present",
+            }
+        )
     return rows
 
 
@@ -452,16 +490,16 @@ def _claude_md_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def render_claude_md_listing_plain(state: InstallationState) -> str:
-    """Plain-text listing of every CLAUDE.md file unclog sees.
+    """Plain-text listing of every auto-injected context file unclog sees.
 
     Diagnostic output for ``--list-claude-md`` — confirms the scan is
-    actually finding every CLAUDE.md before the user starts tuning
-    thresholds or chasing missing-finding bugs.
+    actually finding every CLAUDE.md and auto-memory file before the
+    user starts tuning thresholds or chasing missing-finding bugs.
     """
     rows = _claude_md_rows(state)
     totals = _claude_md_totals(rows)
     lines: list[str] = []
-    lines.append("CLAUDE.md files found:")
+    lines.append("Auto-injected context files found:")
     lines.append("")
     lines.append("global CLAUDE.md:")
     for r in rows:
@@ -486,6 +524,15 @@ def render_claude_md_listing_plain(state: InstallationState) -> str:
                 note = ""
             lines.append(f"  {tokens}  {r['name']}{note}  {r['path']}")
     lines.append("")
+    lines.append("auto-memory (MEMORY.md):")
+    memory_rows = [r for r in rows if r["scope"] == "memory"]
+    if not memory_rows:
+        lines.append("  (no auto-memory files found)")
+    else:
+        for r in memory_rows:
+            tokens = f"{r['tokens']:>8,} tok"
+            lines.append(f"  {tokens}  {r['name']}  {r['path']}")
+    lines.append("")
     lines.append(
         f"totals: {totals['files_present']} file(s) present  ·  "
         f"{totals['tokens_total']:,} tokens total  ·  "
@@ -496,14 +543,14 @@ def render_claude_md_listing_plain(state: InstallationState) -> str:
 
 
 def render_claude_md_listing_rich(state: InstallationState, console: Console) -> None:
-    """Rich TTY rendering of the CLAUDE.md listing.
+    """Rich TTY rendering of the auto-injected context listing.
 
     Uses the same per-category colouring as the inventory chips so the
     diagnostic output reads as part of the same product surface.
     """
     rows = _claude_md_rows(state)
     totals = _claude_md_totals(rows)
-    console.print(Text("CLAUDE.md files found:", style=f"bold {ACCENT}"))
+    console.print(Text("Auto-injected context files found:", style=f"bold {ACCENT}"))
     console.print("")
     console.print(Text("global CLAUDE.md", style=DIM))
     for r in rows:
@@ -517,6 +564,14 @@ def render_claude_md_listing_rich(state: InstallationState, console: Console) ->
         console.print("  [dim](no projects scanned)[/dim]")
     else:
         for r in project_rows:
+            _print_claude_md_row(console, r)
+    console.print("")
+    memory_rows = [r for r in rows if r["scope"] == "memory"]
+    console.print(Text(f"auto-memory MEMORY.md ({len(memory_rows)})", style=DIM))
+    if not memory_rows:
+        console.print("  [dim](no auto-memory files found)[/dim]")
+    else:
+        for r in memory_rows:
             _print_claude_md_row(console, r)
     console.print("")
     footer = Text()

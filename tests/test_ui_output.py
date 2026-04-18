@@ -357,11 +357,69 @@ def test_list_claude_md_plain_shows_global_and_projects(
     (project / "CLAUDE.md").write_text("# project\nhello\n", encoding="utf-8")
     state = run_scan(project=project, cwd=tmp_path)
     out = render_claude_md_listing_plain(state)
-    assert "CLAUDE.md files found" in out
+    assert "Auto-injected context files found" in out
     assert "global CLAUDE.md" in out
     assert "proj" in out
     assert "project CLAUDE.md" in out
+    assert "auto-memory" in out
     assert "totals:" in out
+    assert "tok" in out
+
+
+def test_list_claude_md_plain_includes_auto_memory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Auto-memory MEMORY.md is discovered under ~/.claude/projects/<encoded>/memory/."""
+    from unclog.app import run_scan
+    from unclog.util.paths import encode_project_path
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    memory_dir = claude_home / "projects" / encode_project_path(project) / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text(
+        "- [user](user.md) — Tom, senior engineer\n" * 30,
+        encoding="utf-8",
+    )
+
+    state = run_scan(project=project, cwd=tmp_path)
+    out = render_claude_md_listing_plain(state)
+    # Memory file should show up in the memory section.
+    assert "MEMORY.md" in out
+    # Memory contribution should roll up into the total.
+    project_scope = state.project_scopes[0]
+    assert project_scope.memory_md_text != ""
+    assert project_scope.memory_md_bytes > 0
+
+
+def test_composition_includes_auto_memory_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The baseline composition should surface auto-memory as its own row."""
+    from unclog.app import run_scan
+    from unclog.util.paths import encode_project_path
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    memory_dir = claude_home / "projects" / encode_project_path(project) / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("line\n" * 50, encoding="utf-8")
+
+    state = run_scan(project=project, cwd=tmp_path)
+    report = build_report(state)
+    memory_entries = [e for e in report["composition"] if e["source"].startswith("auto-memory")]
+    assert len(memory_entries) == 1
+    assert memory_entries[0]["tokens"] > 0
+    assert memory_entries[0]["tokens_source"] == "tiktoken"
 
 
 def test_list_claude_md_flags_missing_project(
@@ -392,6 +450,6 @@ def test_cli_list_claude_md_exits_after_listing(
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
     result = runner.invoke(app, ["--list-claude-md", "--plain"])
     assert result.exit_code == 0
-    assert "CLAUDE.md files found" in result.stdout
+    assert "Auto-injected context files found" in result.stdout
     # The listing short-circuits before the normal scan summary.
     assert "baseline:" not in result.stdout

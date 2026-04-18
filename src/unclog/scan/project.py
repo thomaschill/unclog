@@ -35,6 +35,13 @@ class ProjectScope:
     claude_local_md_text: str
     claude_local_md_bytes: int
     has_claudeignore: bool
+    # Auto-memory: ``~/.claude/projects/<encoded>/memory/MEMORY.md``. Claude
+    # Code injects this into every session's system prompt (truncated past
+    # ~200 lines) so it bloats the baseline the same way CLAUDE.md does.
+    # Empty path + blank text when the file doesn't exist on disk.
+    memory_md_path: Path = Path()
+    memory_md_text: str = ""
+    memory_md_bytes: int = 0
 
 
 def _read_text_if_exists(path: Path) -> str:
@@ -44,17 +51,27 @@ def _read_text_if_exists(path: Path) -> str:
         return ""
 
 
-def scan_project(project_path: Path) -> ProjectScope:
+def scan_project(
+    project_path: Path,
+    *,
+    memory_file: Path | None = None,
+) -> ProjectScope:
     """Scan a single project directory into a :class:`ProjectScope`.
 
     The returned scope is valid even when ``project_path`` doesn't
-    exist — callers (``--all-projects``) use ``scope.exists`` to decide
-    whether to skip it entirely, surface it as a stale-entry warning,
-    or include it in findings.
+    exist — callers use ``scope.exists`` to decide whether to skip it
+    entirely, surface it as a stale-entry warning, or include it in
+    findings.
 
     Name resolution is last-segment-of-path in v0.1. Project-config
     name overrides are listed in spec §8 as future work (we don't read
     ``.claude/settings.json``'s name-related fields yet).
+
+    ``memory_file`` optionally points to the project's auto-memory
+    index (``~/.claude/projects/<encoded>/memory/MEMORY.md``). When
+    provided and the file exists, its contents feed the baseline-token
+    accounting. When ``None``, memory fields stay empty — tests that
+    don't care about memory can omit it.
     """
     path = project_path.expanduser()
     # Best-effort resolve; non-existent paths keep their literal form.
@@ -71,6 +88,9 @@ def scan_project(project_path: Path) -> ProjectScope:
     claude_md_text = _read_text_if_exists(claude_md_path) if exists else ""
     claude_local_md_text = _read_text_if_exists(claude_local_md_path) if exists else ""
 
+    memory_path = memory_file if memory_file is not None else Path()
+    memory_text = _read_text_if_exists(memory_path) if memory_file is not None else ""
+
     return ProjectScope(
         path=resolved,
         name=resolved.name or str(resolved),
@@ -82,6 +102,9 @@ def scan_project(project_path: Path) -> ProjectScope:
         claude_local_md_text=claude_local_md_text,
         claude_local_md_bytes=len(claude_local_md_text.encode("utf-8")),
         has_claudeignore=exists and claudeignore_path.exists(),
+        memory_md_path=memory_path,
+        memory_md_text=memory_text,
+        memory_md_bytes=len(memory_text.encode("utf-8")),
     )
 
 
