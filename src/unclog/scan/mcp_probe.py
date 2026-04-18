@@ -362,13 +362,22 @@ def probe_all(
     *,
     timeout: float = DEFAULT_PROBE_TIMEOUT_SEC,
 ) -> Mapping[str, ProbeResult]:
-    """Probe every server in ``servers`` serially and return name -> result.
+    """Probe every stdio server in ``servers`` serially and return name -> result.
 
-    Never raises — every server yields exactly one :class:`ProbeResult`
-    so the caller can always enumerate ``servers`` and find a match.
+    Servers declared without a ``command`` (SSE/HTTP transports that
+    speak over a URL) are omitted from the result rather than reported
+    as failures — unclog can't probe them locally, and flagging them as
+    "failed to start" would be a false positive. Downstream detectors
+    treat an absent probe entry as "unmeasured", which is honest.
+
+    Never raises — every stdio server yields exactly one
+    :class:`ProbeResult` so callers can enumerate the result mapping.
     """
     counter = TiktokenCounter()
     results: dict[str, ProbeResult] = {}
     for name in sorted(servers):
-        results[name] = probe_server(servers[name], timeout=timeout, counter=counter)
+        server = servers[name]
+        if not server.command:
+            continue
+        results[name] = probe_server(server, timeout=timeout, counter=counter)
     return MappingProxyType(results)
