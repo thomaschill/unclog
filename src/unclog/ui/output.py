@@ -733,7 +733,11 @@ def render_plain(state: InstallationState) -> str:
         for entry in report["composition"]:
             tokens = entry.get("tokens")
             size = "unmeasured" if tokens is None else f"{tokens:>8,} tok"
-            lines.append(f"  {size}  {entry['source']}")
+            scope = entry.get("scope")
+            scope_suffix = (
+                f"  [{scope}]" if isinstance(scope, str) and scope.startswith("project:") else ""
+            )
+            lines.append(f"  {size}  {entry['source']}{scope_suffix}")
     if report["findings"]:
         lines.append("")
         auto = sum(1 for f in report["findings"] if f.get("auto_checked"))

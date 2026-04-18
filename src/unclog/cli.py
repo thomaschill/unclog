@@ -94,14 +94,14 @@ def root(
             "with token counts, then exit. Diagnostic for verifying scan coverage."
         ),
     ),
-    probe_mcps: bool = typer.Option(
+    no_probe_mcps: bool = typer.Option(
         False,
-        "--probe-mcps",
+        "--no-probe-mcps",
         help=(
-            "Opt-in: spawn every declared MCP server via stdio JSON-RPC to "
-            "measure its real tools-schema size and surface startup failures. "
-            "Serial, 5s per server, minimal-env. Off by default — the scan "
-            "is otherwise fully read-only."
+            "Skip the live MCP probe. By default unclog spawns each "
+            "declared MCP server via stdio JSON-RPC (serial, 5s per server, "
+            "minimal-env) to measure its real tools-schema size and surface "
+            "startup failures. Pass this flag to keep the scan read-only."
         ),
     ),
 ) -> None:
@@ -129,7 +129,7 @@ def root(
 
     console = Console(no_color=not display.colour)
 
-    state = run_scan(project=project, probe_mcps=probe_mcps)
+    state = run_scan(project=project, probe_mcps=not no_probe_mcps)
 
     if list_claude_md:
         if display.plain:

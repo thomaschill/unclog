@@ -22,6 +22,7 @@ is preserved and reversible via snapshot.
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 from unclog.findings.base import Action, Finding, Scope
 from unclog.findings.thresholds import Thresholds
@@ -29,6 +30,29 @@ from unclog.scan.stats import ActivityIndex
 from unclog.state import InstallationState
 
 _MCP_TOOL_PREFIX = "mcp__"
+
+
+def _all_declared_servers(state: InstallationState) -> dict[str, Path | None]:
+    """Collect every MCP server name across global + project configs.
+
+    Returns name → first project path that declared it (or ``None`` for
+    global). Name collisions between projects keep the first encountered,
+    matching how the scan composes probe keys in :mod:`unclog.app`.
+    """
+    config = state.global_scope.config
+    if config is None:
+        return {}
+    out: dict[str, Path | None] = {name: None for name in config.mcp_servers}
+    for project in config.projects.values():
+        for name in project.mcp_servers:
+            out.setdefault(name, project.path)
+    return out
+
+
+def _scope_for(project_path: Path | None) -> Scope:
+    if project_path is None:
+        return Scope(kind="global")
+    return Scope(kind="project", project_path=project_path)
 
 
 def _servers_loaded_in_session(state: InstallationState) -> set[str]:
@@ -54,8 +78,8 @@ def detect(
     *,
     now: datetime,
 ) -> list[Finding]:
-    config = state.global_scope.config
-    if config is None or not config.mcp_servers:
+    declared = _all_declared_servers(state)
+    if not declared:
         return []
 
     probes = state.global_scope.mcp_probes
@@ -65,17 +89,18 @@ def detect(
         # High-confidence path: every failed probe becomes a dead_mcp.
         # Successful probes are not dead — whether or not the last
         # session happened to invoke them is irrelevant to dead_mcp.
-        for name in sorted(config.mcp_servers):
+        for name in sorted(declared):
             probe = probes.get(name)
             if probe is None or probe.ok:
                 continue
+            project_path = declared[name]
             findings.append(
                 Finding(
                     id=f"dead_mcp:{name}",
                     type="dead_mcp",
                     title=f"MCP {name!r} failed to start",
                     reason=probe.error or "probe failed with no error message",
-                    scope=Scope(kind="global"),
+                    scope=_scope_for(project_path),
                     action=Action(primitive="comment_out_mcp", server_name=name),
                     auto_checked=False,
                     token_savings=None,
@@ -97,16 +122,17 @@ def detect(
         return []
 
     loaded = _servers_loaded_in_session(state)
-    for name in sorted(config.mcp_servers):
+    for name in sorted(declared):
         if name in loaded:
             continue
+        project_path = declared[name]
         findings.append(
             Finding(
                 id=f"dead_mcp:{name}",
                 type="dead_mcp",
                 title=f"MCP {name!r} configured but not loaded in last session",
                 reason="present in .claude.json, absent from latest session tools",
-                scope=Scope(kind="global"),
+                scope=_scope_for(project_path),
                 action=Action(primitive="comment_out_mcp", server_name=name),
                 auto_checked=False,
                 token_savings=None,

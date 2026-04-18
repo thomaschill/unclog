@@ -96,6 +96,12 @@ def render_treemap(
         legend.append("■ ", style=colour)
         legend.append(f"{int(entry['tokens']):>6,} tok  ", style=DIM)
         legend.append(str(entry["source"]), style="default")
+        # Project-scoped rows (MCPs, etc.) only load inside that project —
+        # surface the scope inline so the user doesn't mistake a per-project
+        # cost for a global baseline contributor.
+        scope = entry.get("scope")
+        if isinstance(scope, str) and scope.startswith("project:"):
+            legend.append(f"  [{scope}]", style=DIM)
 
     hidden = len(measurable) - len(top)
     if hidden > 0:
