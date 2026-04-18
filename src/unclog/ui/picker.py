@@ -52,9 +52,6 @@ from unclog.ui.theme import ACCENT, DIM
 # colour and instantly see the split between agents, skills, plugins,
 # and MCPs without reading every row.
 _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
-    "unused_agent": ("agent", "#38bdf8"),
-    "unused_skill": ("skill", "#22c55e"),
-    "unused_command": ("cmd", "#a78bfa"),
     "stale_plugin": ("plugin", "#e879f9"),
     "disabled_plugin_residue": ("residue", "#f472b6"),
     "dead_mcp": ("mcp", "#fb923c"),

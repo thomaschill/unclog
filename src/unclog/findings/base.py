@@ -19,9 +19,6 @@ from types import MappingProxyType
 from typing import Any, Literal
 
 FindingType = Literal[
-    "unused_skill",
-    "unused_agent",
-    "unused_command",
     "dead_mcp",
     "unused_mcp",
     "stale_plugin",
@@ -100,7 +97,7 @@ class Finding:
 
     ``id`` is the stable identifier used in snapshots and JSON output.
     Convention: ``<type>:<slug-or-key>`` so it is human-readable in logs
-    (e.g. ``unused_skill:fashion-trend-analyst``).
+    (e.g. ``unused_mcp:notion``).
 
     ``token_savings`` is the detector's best estimate of the tokens that
     would be recovered by applying the action, or ``None`` if not
