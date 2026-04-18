@@ -102,6 +102,15 @@ class ClaudePaths:
         """Return the session-history directory Claude Code keeps for a project."""
         return self.projects_dir / encode_project_path(project_path)
 
+    def project_memory_file(self, project_path: Path) -> Path:
+        """Return the auto-memory index file Claude Code persists per project.
+
+        This file is auto-injected into the system prompt of every session
+        (truncated past ~200 lines), so its size feeds the baseline cost
+        just like CLAUDE.md does.
+        """
+        return self.projects_dir / encode_project_path(project_path) / "memory" / "MEMORY.md"
+
 
 @cache
 def claude_home() -> Path:

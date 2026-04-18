@@ -5,22 +5,29 @@ session whether the user calls it or not. A server with, say, 40 tools
 at ~200 tokens each is 8k tokens of schema overhead on every single
 prompt — perpetual cost for zero value if nobody's calling it.
 
-v0.1 signal: the server shows up in the latest session's ``tools`` array
-(so it is being loaded) but zero ``tool_use`` records across the latest
-session of every project reference it. We parse those counts up-front in
-``scan_global`` and hang them off :class:`GlobalScope.mcp_invocations`.
+Two signal sources for "is this server loaded":
+
+- **Probe (preferred)**: ``--probe-mcps`` confirmed the server actually
+  starts and produces a tools schema. This works even when no session
+  JSONL exists yet — fresh installs get coverage too.
+- **Session fallback**: server appears in the latest session's ``tools``
+  array. Lower confidence (schemas are sometimes absent from JSONL) but
+  useful when probing is skipped.
+
+Invocations are tallied across each project's latest session in
+``scan_global`` and hang off :class:`GlobalScope.mcp_invocations`. Zero
+invocations + confirmed-loaded → unused.
 
 Auto-check is never set for ``unused_mcp`` (spec §6): removing an MCP a
 user is mid-setup on would be counterproductive. Action is
 ``comment_out_mcp`` so the config is preserved and snapshot-reversible.
-Token savings come from the session's own tools-schema attribution, so
-the number shown is the real per-session cost.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 from unclog.findings.base import Action, Finding, Scope
 from unclog.findings.thresholds import Thresholds
@@ -31,8 +38,8 @@ from unclog.state import InstallationState
 _MCP_TOOL_PREFIX = "mcp__"
 
 
-def _loaded_server_tokens(state: InstallationState) -> dict[str, int]:
-    """Map each MCP server loaded in the latest session to its schema tokens."""
+def _session_tokens(state: InstallationState) -> dict[str, int]:
+    """Map each MCP server seen in the latest session to its schema tokens."""
     session = state.global_scope.latest_session
     if session is None:
         return {}
@@ -51,6 +58,19 @@ def _loaded_server_tokens(state: InstallationState) -> dict[str, int]:
     return per_server
 
 
+def _declaring_project(state: InstallationState, name: str) -> Path | None:
+    """Return the project that declares ``name`` (or ``None`` for global)."""
+    config = state.global_scope.config
+    if config is None:
+        return None
+    if name in config.mcp_servers:
+        return None
+    for project in config.projects.values():
+        if name in project.mcp_servers:
+            return project.path
+    return None
+
+
 def detect(
     state: InstallationState,
     activity: ActivityIndex,
@@ -59,34 +79,52 @@ def detect(
     now: datetime,
 ) -> list[Finding]:
     del activity, thresholds, now  # signature parity with other detectors
-    loaded = _loaded_server_tokens(state)
+
+    probes = state.global_scope.mcp_probes
+    session_tokens = _session_tokens(state)
+    invocations = state.global_scope.mcp_invocations
+    session = state.global_scope.latest_session
+
+    # Unified "loaded" signal: probe success beats session appearance. The
+    # value is the per-server token cost to show in savings; the source
+    # string lands on evidence for the JSON schema.
+    loaded: dict[str, tuple[int, str]] = {}
+    for name, probe in (probes or {}).items():
+        if probe.ok and probe.tools_tokens:
+            loaded[name] = (probe.tools_tokens, "probe")
+    for name, tokens in session_tokens.items():
+        if name not in loaded:
+            loaded[name] = (tokens, "session")
+
     if not loaded:
         return []
 
-    invocations = state.global_scope.mcp_invocations
-    session = state.global_scope.latest_session
-    session_note = str(session.session_path) if session is not None else ""
-
     findings: list[Finding] = []
     for name in sorted(loaded):
-        count = invocations.get(name, 0)
-        if count > 0:
+        if invocations.get(name, 0) > 0:
             continue
-        tokens = loaded[name]
+        tokens, source = loaded[name]
+        project_path = _declaring_project(state, name)
+        scope = (
+            Scope(kind="project", project_path=project_path)
+            if project_path is not None
+            else Scope(kind="global")
+        )
         findings.append(
             Finding(
                 id=f"unused_mcp:{name}",
                 type="unused_mcp",
                 title=f"MCP {name!r} loads every session but was never invoked",
-                reason="tool schemas loaded; zero tool_use records across recent sessions",
-                scope=Scope(kind="global"),
+                reason="tools schema loaded; zero tool_use records across recent sessions",
+                scope=scope,
                 action=Action(primitive="comment_out_mcp", server_name=name),
                 auto_checked=False,
                 token_savings=tokens or None,
                 evidence={
                     "server_name": name,
-                    "session_path": session_note,
+                    "session_path": str(session.session_path) if session is not None else "",
                     "invocations_observed": 0,
+                    "source": source,
                     "note": (
                         "invocation count aggregated across each project's latest "
                         "session; disable with comment_out_mcp, reversible via snapshot"

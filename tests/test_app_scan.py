@@ -100,8 +100,8 @@ def test_run_scan_builds_state_from_fixture(
     assert gs.settings is not None
     assert gs.settings.enabled_plugins == {"superpower@antonin": True}
     # Fixture registers /Users/tom/draper — a stale entry. Default scan
-    # flags it as "no longer exists"; anything unrelated should not.
-    assert all("no longer exists" in w for w in state.warnings)
+    # flags stale projects via one summary warning.
+    assert all("no longer exist" in w for w in state.warnings)
 
 
 def test_run_scan_warns_when_home_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

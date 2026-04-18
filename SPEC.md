@@ -112,6 +112,7 @@ unclog --plain               # ASCII-only, no color, no animation (for CI)
 unclog --dry-run             # prompts run, no files written, no snapshot
 unclog --yes                 # apply pre-checked safe findings, skip all prompts
 unclog --project PATH        # narrow the audit to a single project
+unclog --probe-mcps          # spawn configured MCP servers to measure tools schema (opt-in)
 unclog --no-animation        # disable post-apply countdown; keeps color
 
 unclog restore               # list snapshots
@@ -180,7 +181,7 @@ This is the single load-bearing technical read. From `~/.claude/projects/<encode
 Rules:
 
 - If no session JSONL exists for a project, mark MCP + skill costs as `unknown` and fall back to estimating from config (count skill descriptions, flag MCPs as "size not measured").
-- Never spawn MCP servers to measure them in v0.1.
+- Never spawn MCP servers by default. `--probe-mcps` opts into a minimal stdio JSON-RPC probe (initialize → tools/list) with a 5s/server timeout, serial execution, and a whitelisted env (PATH/HOME/TMPDIR/USERPROFILE/SystemRoot/LANG/LC_ALL/LC_CTYPE, plus the server's declared env). Probe-measured tokens use the same tiktoken counter as session-measured ones.
 - Parser must tolerate unknown fields and malformed lines. Skip, don't crash.
 
 ## 6. Finding types
@@ -239,6 +240,7 @@ CLAUDE.md is the highest-leverage target. Approach:
 2. **Section parsing**: parse markdown into a section tree by heading level. Each section has a path (heading chain), byte range, and token cost.
 3. **Lint passes**:
    - Dead file refs: regex out anything that looks like a path, stat it. Lines that only consist of a dead ref get flagged for removal. Lines with a dead ref mixed with prose get flagged for manual edit.
+   - `@path` imports: Claude Code inlines the contents of `@path` references transitively. Walk the import tree breadth-first, cap depth at 5, dedupe visited files. Broken root-level imports flow through the same line-only/mixed split as regular dead refs; broken transitive imports (depth ≥2) surface as one `open_in_editor` finding per intermediate file so the user sees exactly which file to edit.
    - Exact duplicate sections across global/project: hash section body, match.
    - Oversized section: `> 1,000` tokens → flag with "open in editor" action.
    - Single-project relevance: if section body mentions only paths under one project, suggest moving.

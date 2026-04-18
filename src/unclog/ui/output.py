@@ -54,8 +54,15 @@ _INVENTORY_CHIP_COLOUR: dict[str, str] = {
     "commands": "#a78bfa",
     "plugins": "#e879f9",
     "mcp": "#fb923c",
+    "hooks": "#f43f5e",
     "projects": "#a3a3a3",
 }
+
+# Hook events that fire on every prompt — the highest-cost ones to leave
+# unaudited. ``PreToolUse`` / ``PostToolUse`` fire per tool invocation
+# which is usually per turn in practice but we only surface the
+# guaranteed-every-turn events so the "heavy" signal stays truthful.
+_EVERY_TURN_HOOK_EVENTS: frozenset[str] = frozenset({"SessionStart", "UserPromptSubmit"})
 
 
 def _mcp_attribution(session: SessionSystemBlock, counter: TokenCounter) -> dict[str, int]:
@@ -83,29 +90,50 @@ def _mcp_entry(
     measured: int | None,
     *,
     scope: str,
+    probed: int | None = None,
+    probe_failed: bool = False,
     extra_note: str | None = None,
 ) -> dict[str, Any]:
     """Build a composition row for a single MCP server.
 
-    ``measured`` is the per-server token cost derived from the latest
-    session's tools array when that array is present; current Claude
-    Code session JSONLs don't carry tool schemas, so this is almost
-    always ``None`` in practice and the row renders as unmeasured with
-    a note explaining why.
+    Three token sources, ranked by authority:
+
+    - ``probed``: ``--probe-mcps`` spawned the server and counted its
+      tools schema directly. Most accurate; render as ``probe+tiktoken``.
+    - ``measured``: per-server cost derived from the latest session's
+      tools array. Current Claude Code session JSONLs rarely carry
+      schemas, so this is usually ``None`` in practice.
+    - Neither: ``unmeasured``. Fallback.
+
+    ``probe_failed`` documents that the probe ran but the server
+    couldn't start — the composition still renders as ``unmeasured``
+    (there's no schema to measure) but the note makes it clear the
+    server is broken, not merely unseen.
     """
-    if measured is not None:
+    if probed is not None:
         note = extra_note
+        tokens_source = "probe+tiktoken"
+        tokens: int | None = probed
+    elif measured is not None:
+        note = extra_note
+        tokens_source = "session+tiktoken"
+        tokens = measured
     else:
-        base_note = (
-            "schema not in session JSONL; v0.1 does not spawn MCP servers to probe them"
-        )
+        if probe_failed:
+            base_note = "probe failed — see findings for stderr"
+        else:
+            base_note = (
+                "schema not in session JSONL; run with --probe-mcps to measure live"
+            )
         note = f"{base_note}; {extra_note}" if extra_note else base_note
+        tokens_source = "unmeasured"
+        tokens = None
     return {
         "source": f"mcp:{name}",
         "scope": scope,
         "bytes": None,
-        "tokens": measured,
-        "tokens_source": "session+tiktoken" if measured is not None else "unmeasured",
+        "tokens": tokens,
+        "tokens_source": tokens_source,
         "note": note,
     }
 
@@ -186,14 +214,44 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
             }
         )
 
+    memory_projects = [p for p in state.project_scopes if p.memory_md_text]
+    if memory_projects:
+        memory_tokens = sum(counter.count(p.memory_md_text) for p in memory_projects)
+        memory_bytes = sum(p.memory_md_bytes for p in memory_projects)
+        entries.append(
+            {
+                "source": f"auto-memory (n={len(memory_projects)})",
+                "scope": "project",
+                "bytes": memory_bytes,
+                "tokens": memory_tokens,
+                "tokens_source": "tiktoken",
+                "note": (
+                    "~/.claude/projects/<encoded>/memory/MEMORY.md files — "
+                    "auto-injected into every session prompt, truncated past ~200 lines"
+                ),
+            }
+        )
+
     session = gs.latest_session
     attribution = _mcp_attribution(session, counter) if session else {}
 
     # Global MCPs: load unconditionally into every session.
     global_mcp = gs.config.mcp_servers if gs.config else {}
+    probes = gs.mcp_probes
     for name in sorted(global_mcp):
         measured = attribution.get(name)
-        entries.append(_mcp_entry(name, measured, scope="global"))
+        probe = probes.get(name) if probes else None
+        probed = probe.tools_tokens if probe is not None and probe.ok else None
+        probe_failed = probe is not None and not probe.ok
+        entries.append(
+            _mcp_entry(
+                name,
+                measured,
+                scope="global",
+                probed=probed,
+                probe_failed=probe_failed,
+            )
+        )
 
     # Project-scoped MCPs: only load when that project is open, but
     # they still bloat the baseline for users who spend most of their
@@ -212,6 +270,9 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
                     project_attribution[key] = m
     for (srv_name, _cmd, _args), project_paths in sorted(project_groups.items()):
         measured = project_attribution.get((srv_name, _cmd, _args))
+        probe = probes.get(srv_name) if probes else None
+        probed = probe.tools_tokens if probe is not None and probe.ok else None
+        probe_failed = probe is not None and not probe.ok
         scope_label = (
             f"project:{project_paths[0]}"
             if len(project_paths) == 1
@@ -222,6 +283,8 @@ def build_composition(state: InstallationState, counter: TokenCounter) -> list[d
                 srv_name,
                 measured,
                 scope=scope_label,
+                probed=probed,
+                probe_failed=probe_failed,
                 extra_note=(
                     None
                     if len(project_paths) == 1
@@ -257,6 +320,25 @@ def _mcp_label(inv: dict[str, Any]) -> str:
     return f"{total} MCP servers"
 
 
+def _hooks_label(inv: dict[str, Any]) -> str:
+    """Render the hooks count with project-scope breakdown when relevant.
+
+    Claude Code fires hooks silently on every session; every hook's
+    stdout is injected into context, so users routinely underestimate
+    what is running on their behalf. Always surface the count, even
+    zero, so the absence is explicit.
+    """
+    total = inv.get("hooks", 0)
+    project_scoped = inv.get("hooks_project", 0)
+    if total == 0:
+        return "0 hooks"
+    if project_scoped and project_scoped == total:
+        return f"{total} hooks (project-scoped)"
+    if project_scoped:
+        return f"{total} hooks ({project_scoped} project-scoped)"
+    return f"{total} hooks"
+
+
 def _inventory(state: InstallationState) -> dict[str, int]:
     gs = state.global_scope
     global_mcp = len(gs.config.mcp_servers) if gs.config else 0
@@ -264,6 +346,8 @@ def _inventory(state: InstallationState) -> dict[str, int]:
     if gs.config:
         for project in gs.config.projects.values():
             project_mcp += len(project.mcp_servers)
+    global_hooks = len(gs.settings.hooks) if gs.settings else 0
+    project_hooks = sum(len(p.hooks) for p in state.project_scopes)
     return {
         "skills": len(gs.skills),
         "agents": len(gs.agents),
@@ -272,6 +356,9 @@ def _inventory(state: InstallationState) -> dict[str, int]:
         "mcp_servers": global_mcp + project_mcp,
         "mcp_servers_global": global_mcp,
         "mcp_servers_project": project_mcp,
+        "hooks": global_hooks + project_hooks,
+        "hooks_global": global_hooks,
+        "hooks_project": project_hooks,
         "projects_known": len(gs.config.projects) if gs.config else 0,
     }
 
@@ -322,7 +409,7 @@ def build_report(state: InstallationState) -> dict[str, Any]:
     composition = build_composition(state, counter)
     session = state.global_scope.latest_session
     findings = _load_findings(state)
-    return {
+    report: dict[str, Any] = {
         "schema": SCHEMA_ID,
         "unclog_version": __version__,
         "generated_at": state.generated_at.isoformat().replace("+00:00", "Z"),
@@ -334,6 +421,10 @@ def build_report(state: InstallationState) -> dict[str, Any]:
         "warnings": list(state.warnings),
         "projects_audited": _projects_audited(state),
     }
+    probes = state.global_scope.mcp_probes
+    if probes:
+        report["mcp_probes"] = [probes[name].to_json() for name in sorted(probes)]
+    return report
 
 
 def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:
@@ -344,17 +435,276 @@ def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:
     the difference between "no findings because nothing's wrong" and
     "no findings because we didn't scan any projects".
     """
+    counter = TiktokenCounter()
     return [
         {
             "path": str(project.path),
             "name": project.name,
             "exists": project.exists,
             "claude_md_bytes": project.claude_md_bytes,
+            "claude_md_tokens": (
+                counter.count(project.claude_md_text) if project.claude_md_text else 0
+            ),
             "claude_local_md_bytes": project.claude_local_md_bytes,
+            "claude_local_md_tokens": (
+                counter.count(project.claude_local_md_text)
+                if project.claude_local_md_text
+                else 0
+            ),
+            "memory_md_bytes": project.memory_md_bytes,
+            "memory_md_tokens": (
+                counter.count(project.memory_md_text) if project.memory_md_text else 0
+            ),
             "has_claudeignore": project.has_claudeignore,
         }
         for project in state.project_scopes
     ]
+
+
+def _claude_md_rows(state: InstallationState) -> list[dict[str, Any]]:
+    """Flat per-file rows for the CLAUDE.md + auto-memory listing.
+
+    Includes the global ``CLAUDE.md`` / ``CLAUDE.local.md``, per-project
+    CLAUDE.md pairs, and the per-project auto-memory index file Claude
+    Code persists at ``~/.claude/projects/<encoded>/memory/MEMORY.md``.
+    Missing files are reported as rows with ``tokens=None`` and a
+    ``status`` string so users can distinguish "file not present" from
+    "project path missing on disk".
+    """
+    counter = TiktokenCounter()
+    rows: list[dict[str, Any]] = []
+    gs = state.global_scope
+
+    rows.append(
+        {
+            "scope": "global",
+            "name": "CLAUDE.md",
+            "path": str(gs.claude_home / "CLAUDE.md"),
+            "tokens": counter.count(gs.claude_md_text) if gs.claude_md_text else None,
+            "bytes": gs.claude_md_bytes,
+            "status": "present" if gs.claude_md_text else "absent",
+        }
+    )
+    rows.append(
+        {
+            "scope": "global",
+            "name": "CLAUDE.local.md",
+            "path": str(gs.claude_home / "CLAUDE.local.md"),
+            "tokens": (
+                counter.count(gs.claude_local_md_text) if gs.claude_local_md_text else None
+            ),
+            "bytes": gs.claude_local_md_bytes,
+            "status": "present" if gs.claude_local_md_text else "absent",
+        }
+    )
+
+    for project in state.project_scopes:
+        if not project.exists:
+            rows.append(
+                {
+                    "scope": "project",
+                    "name": project.name,
+                    "path": str(project.claude_md_path),
+                    "tokens": None,
+                    "bytes": 0,
+                    "status": "path_missing",
+                }
+            )
+            continue
+        rows.append(
+            {
+                "scope": "project",
+                "name": project.name,
+                "path": str(project.claude_md_path),
+                "tokens": (
+                    counter.count(project.claude_md_text) if project.claude_md_text else None
+                ),
+                "bytes": project.claude_md_bytes,
+                "status": "present" if project.claude_md_text else "absent",
+            }
+        )
+        if project.claude_local_md_text:
+            rows.append(
+                {
+                    "scope": "project",
+                    "name": f"{project.name} (CLAUDE.local.md)",
+                    "path": str(project.claude_local_md_path),
+                    "tokens": counter.count(project.claude_local_md_text),
+                    "bytes": project.claude_local_md_bytes,
+                    "status": "present",
+                }
+            )
+
+    for project in state.project_scopes:
+        if not project.memory_md_text:
+            continue
+        rows.append(
+            {
+                "scope": "memory",
+                "name": project.name,
+                "path": str(project.memory_md_path),
+                "tokens": counter.count(project.memory_md_text),
+                "bytes": project.memory_md_bytes,
+                "status": "present",
+            }
+        )
+    return rows
+
+
+def _claude_md_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Aggregate counts for the listing footer."""
+    present = [r for r in rows if r["status"] == "present"]
+    project_rows = [r for r in rows if r["scope"] == "project"]
+    return {
+        "files_present": len(present),
+        "tokens_total": sum(r["tokens"] or 0 for r in present),
+        "projects_scanned": len(project_rows),
+        "projects_missing": sum(1 for r in rows if r["status"] == "path_missing"),
+        "projects_empty": sum(
+            1 for r in project_rows if r["status"] == "absent"
+        ),
+    }
+
+
+def render_claude_md_listing_plain(state: InstallationState) -> str:
+    """Plain-text listing of every auto-injected context file unclog sees.
+
+    Diagnostic output for ``--list-claude-md`` — confirms the scan is
+    actually finding every CLAUDE.md and auto-memory file before the
+    user starts tuning thresholds or chasing missing-finding bugs.
+    """
+    rows = _claude_md_rows(state)
+    totals = _claude_md_totals(rows)
+    lines: list[str] = []
+    lines.append("Auto-injected context files found:")
+    lines.append("")
+    lines.append("global CLAUDE.md:")
+    for r in rows:
+        if r["scope"] != "global":
+            continue
+        tokens = "—" if r["tokens"] is None else f"{r['tokens']:>8,} tok"
+        status = "" if r["status"] == "present" else f"  ({r['status']})"
+        lines.append(f"  {tokens}  {r['name']}{status}  {r['path']}")
+    lines.append("")
+    lines.append("project CLAUDE.md:")
+    project_rows = [r for r in rows if r["scope"] == "project"]
+    content_rows = [r for r in project_rows if r["status"] == "present"]
+    empty = totals["projects_empty"]
+    missing = totals["projects_missing"]
+    hidden: list[str] = []
+    if empty:
+        hidden.append(f"{empty} without a CLAUDE.md")
+    if missing:
+        hidden.append(f"{missing} path missing")
+    if not project_rows:
+        lines.append("  (no projects scanned)")
+    elif not content_rows:
+        lines.append("  (none of the known projects have a CLAUDE.md)")
+        if hidden:
+            lines.append(f"  (hidden: {' · '.join(hidden)})")
+    else:
+        for r in content_rows:
+            tokens = f"{r['tokens']:>8,} tok"
+            lines.append(f"  {tokens}  {r['name']}  {r['path']}")
+        if hidden:
+            lines.append(f"  (hidden: {' · '.join(hidden)})")
+    lines.append("")
+    lines.append("auto-memory (MEMORY.md):")
+    memory_rows = [r for r in rows if r["scope"] == "memory"]
+    if not memory_rows:
+        lines.append("  (no auto-memory files found)")
+    else:
+        for r in memory_rows:
+            tokens = f"{r['tokens']:>8,} tok"
+            lines.append(f"  {tokens}  {r['name']}  {r['path']}")
+    lines.append("")
+    lines.append(
+        f"totals: {totals['files_present']} file(s) present  ·  "
+        f"{totals['tokens_total']:,} tokens total  ·  "
+        f"{totals['projects_scanned']} project(s) scanned"
+        + (f"  ·  {totals['projects_missing']} missing" if totals["projects_missing"] else "")
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_claude_md_listing_rich(state: InstallationState, console: Console) -> None:
+    """Rich TTY rendering of the auto-injected context listing.
+
+    Uses the same per-category colouring as the inventory chips so the
+    diagnostic output reads as part of the same product surface.
+    """
+    rows = _claude_md_rows(state)
+    totals = _claude_md_totals(rows)
+    console.print(Text("Auto-injected context files found:", style=f"bold {ACCENT}"))
+    console.print("")
+    console.print(Text("global CLAUDE.md", style=DIM))
+    for r in rows:
+        if r["scope"] != "global":
+            continue
+        _print_claude_md_row(console, r)
+    console.print("")
+    project_rows = [r for r in rows if r["scope"] == "project"]
+    content_rows = [r for r in project_rows if r["status"] == "present"]
+    empty = totals["projects_empty"]
+    missing = totals["projects_missing"]
+    hidden: list[str] = []
+    if empty:
+        hidden.append(f"{empty} without a CLAUDE.md")
+    if missing:
+        hidden.append(f"{missing} path missing")
+    console.print(
+        Text(
+            f"project CLAUDE.md ({len(content_rows)}/{len(project_rows)} with content)",
+            style=DIM,
+        )
+    )
+    if not project_rows:
+        console.print("  [dim](no projects scanned)[/dim]")
+    elif not content_rows:
+        console.print("  [dim](none of the known projects have a CLAUDE.md)[/dim]")
+        if hidden:
+            console.print(f"  [dim](hidden: {' · '.join(hidden)})[/dim]")
+    else:
+        for r in content_rows:
+            _print_claude_md_row(console, r)
+        if hidden:
+            console.print(f"  [dim](hidden: {' · '.join(hidden)})[/dim]")
+    console.print("")
+    memory_rows = [r for r in rows if r["scope"] == "memory"]
+    console.print(Text(f"auto-memory MEMORY.md ({len(memory_rows)})", style=DIM))
+    if not memory_rows:
+        console.print("  [dim](no auto-memory files found)[/dim]")
+    else:
+        for r in memory_rows:
+            _print_claude_md_row(console, r)
+    console.print("")
+    footer = Text()
+    footer.append(f"{totals['files_present']} file(s) present", style=f"bold {ACCENT}")
+    footer.append("  ·  ", style=DIM)
+    footer.append(f"{totals['tokens_total']:,} tokens total", style=f"bold {ACCENT}")
+    footer.append("  ·  ", style=DIM)
+    footer.append(f"{totals['projects_scanned']} project(s) scanned", style=DIM)
+    if totals["projects_missing"]:
+        footer.append("  ·  ", style=DIM)
+        footer.append(f"{totals['projects_missing']} missing", style="#eab308")
+    console.print(footer)
+
+
+def _print_claude_md_row(console: Console, row: dict[str, Any]) -> None:
+    line = Text("  ")
+    if row["tokens"] is None:
+        line.append(f"{'—':>8}    ", style=DIM)
+    else:
+        line.append(f"{row['tokens']:>8,} tok", style=f"bold {ACCENT}")
+    line.append("  ")
+    line.append(row["name"])
+    if row["status"] == "path_missing":
+        line.append("  (path missing)", style="#eab308")
+    elif row["status"] == "absent":
+        line.append("  (no CLAUDE.md)", style=DIM)
+    line.append("  ")
+    line.append(row["path"], style=DIM)
+    console.print(line)
 
 
 def baseline_tokens(state: InstallationState) -> int:
@@ -398,7 +748,7 @@ def render_plain(state: InstallationState) -> str:
         "inventory: "
         f"{inv['skills']} skills | {inv['agents']} agents | "
         f"{inv['commands']} commands | {inv['plugins']} plugins | "
-        f"{_mcp_label(inv)} | "
+        f"{_mcp_label(inv)} | {_hooks_label(inv)} | "
         f"{inv['projects_known']} known projects"
     )
     if report["projects_audited"]:
@@ -414,7 +764,11 @@ def render_plain(state: InstallationState) -> str:
         for entry in report["composition"]:
             tokens = entry.get("tokens")
             size = "unmeasured" if tokens is None else f"{tokens:>8,} tok"
-            lines.append(f"  {size}  {entry['source']}")
+            scope = entry.get("scope")
+            scope_suffix = (
+                f"  [{scope}]" if isinstance(scope, str) and scope.startswith("project:") else ""
+            )
+            lines.append(f"  {size}  {entry['source']}{scope_suffix}")
     if report["findings"]:
         lines.append("")
         auto = sum(1 for f in report["findings"] if f.get("auto_checked"))
@@ -498,12 +852,20 @@ def _render_inventory_chips(inv: dict[str, int]) -> Text:
     elif inv.get("mcp_servers_project"):
         mcp_label = f"MCP ({inv['mcp_servers_project']} project-scoped)"
 
+    hooks_total = inv.get("hooks", 0)
+    hooks_label = "hooks"
+    if hooks_total and inv.get("hooks_project") == hooks_total:
+        hooks_label = "hooks (project-scoped)"
+    elif inv.get("hooks_project"):
+        hooks_label = f"hooks ({inv['hooks_project']} project-scoped)"
+
     chips: list[tuple[str, str, int]] = [
         ("skills", "skills", inv["skills"]),
         ("agents", "agents", inv["agents"]),
         ("commands", "commands", inv["commands"]),
         ("plugins", "plugins", inv["plugins"]),
         ("mcp", mcp_label, inv["mcp_servers"]),
+        ("hooks", hooks_label, hooks_total),
         ("projects", "projects", inv["projects_known"]),
     ]
 
@@ -528,6 +890,7 @@ _INFORMATIONAL_GROUP_LABEL: dict[str, str] = {
     "missing_claudeignore": "missing .claudeignore",
     "disabled_plugin_residue": "recently-disabled plugin residue",
     "claude_md_dead_ref": "CLAUDE.md dead references",
+    "heavy_hook": "every-turn hooks",
 }
 
 

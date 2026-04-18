@@ -12,7 +12,14 @@ from unclog.apply.snapshot import SnapshotError, list_snapshots, load_snapshot
 from unclog.state import InstallationState
 from unclog.ui.display import DisplayOptions
 from unclog.ui.interactive import InteractiveOptions, run_interactive
-from unclog.ui.output import baseline_tokens, render_json, render_plain, render_rich
+from unclog.ui.output import (
+    baseline_tokens,
+    render_claude_md_listing_plain,
+    render_claude_md_listing_rich,
+    render_json,
+    render_plain,
+    render_rich,
+)
 from unclog.util.paths import claude_paths
 
 app = typer.Typer(
@@ -79,6 +86,24 @@ def root(
         "--no-animation",
         help="Disable motion (post-apply countdown); keeps colour.",
     ),
+    list_claude_md: bool = typer.Option(
+        False,
+        "--list-claude-md",
+        help=(
+            "Print every CLAUDE.md file unclog can see (global + per-project) "
+            "with token counts, then exit. Diagnostic for verifying scan coverage."
+        ),
+    ),
+    no_probe_mcps: bool = typer.Option(
+        False,
+        "--no-probe-mcps",
+        help=(
+            "Skip the live MCP probe. By default unclog spawns each "
+            "declared MCP server via stdio JSON-RPC (serial, 5s per server, "
+            "minimal-env) to measure its real tools-schema size and surface "
+            "startup failures. Pass this flag to keep the scan read-only."
+        ),
+    ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
 
@@ -104,7 +129,14 @@ def root(
 
     console = Console(no_color=not display.colour)
 
-    state = run_scan(project=project)
+    state = run_scan(project=project, probe_mcps=not no_probe_mcps)
+
+    if list_claude_md:
+        if display.plain:
+            typer.echo(render_claude_md_listing_plain(state), nl=False)
+        else:
+            render_claude_md_listing_rich(state, console)
+        return
 
     if as_json:
         typer.echo(render_json(state))

@@ -16,6 +16,7 @@ from typing import Literal
 
 from unclog.scan.config import ClaudeConfig, Settings
 from unclog.scan.filesystem import Agent, Command, InstalledPlugin, PluginContent, Skill
+from unclog.scan.mcp_probe import ProbeResult
 from unclog.scan.project import ProjectScope
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
@@ -63,6 +64,13 @@ class GlobalScope:
     # of every project. Zero (or absent) means "never invoked" in the
     # window unclog can see; it is the signal unused_mcp detection uses.
     mcp_invocations: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    # Per-MCP-server probe results from ``--probe-mcps``. Empty unless
+    # the user opted in. When present, probe-attributed tokens/errors
+    # take precedence over session-inferred state for composition and
+    # ``dead_mcp`` findings.
+    mcp_probes: Mapping[str, ProbeResult] = field(
         default_factory=lambda: MappingProxyType({})
     )
 

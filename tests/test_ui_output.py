@@ -13,7 +13,13 @@ from unclog.scan.filesystem import Agent, Skill
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
 from unclog.state import GlobalScope, InstallationState
-from unclog.ui.output import SCHEMA_ID, build_report, render_json, render_plain
+from unclog.ui.output import (
+    SCHEMA_ID,
+    build_report,
+    render_claude_md_listing_plain,
+    render_json,
+    render_plain,
+)
 from unclog.util.paths import claude_home
 
 runner = CliRunner()
@@ -30,10 +36,15 @@ def _make_state(
     skills: tuple[Skill, ...] = (),
     agents: tuple[Agent, ...] = (),
     config: ClaudeConfig | None = None,
+    settings: Settings | None = None,
     warnings: tuple[str, ...] = (),
     latest_session: SessionSystemBlock | None = None,
     activity: ActivityIndex | None = None,
+    project_scopes: tuple = (),
+    mcp_probes: dict | None = None,  # type: ignore[type-arg]
 ) -> InstallationState:
+    from types import MappingProxyType
+
     home = Path("/fake/.claude")
     return InstallationState(
         generated_at=datetime(2026, 4, 17, 18, 42, tzinfo=UTC),
@@ -41,7 +52,7 @@ def _make_state(
         global_scope=GlobalScope(
             claude_home=home,
             config=config,
-            settings=Settings(),
+            settings=settings if settings is not None else Settings(),
             claude_md_bytes=len(claude_md_text.encode("utf-8")),
             claude_md_text=claude_md_text,
             claude_local_md_bytes=0,
@@ -50,7 +61,9 @@ def _make_state(
             agents=agents,
             latest_session=latest_session,
             activity=activity if activity is not None else ActivityIndex(),
+            mcp_probes=MappingProxyType(mcp_probes or {}),
         ),
+        project_scopes=project_scopes,
         warnings=warnings,
     )
 
@@ -114,6 +127,40 @@ def test_build_report_attributes_mcp_from_session_tools() -> None:
     assert notion["tokens"] is None
     assert report["baseline"]["tokens_source"] == "session+tiktoken"
     assert report["baseline"]["estimated_tokens"] == session.total_tokens
+
+
+def test_build_report_uses_probe_tokens_when_probe_ok() -> None:
+    """When --probe-mcps ran, composition rows carry probe+tiktoken tokens."""
+    from unclog.scan.mcp_probe import ProbeResult
+
+    config = ClaudeConfig(mcp_servers={"github": McpServer(name="github")})
+    probes = {"github": ProbeResult(name="github", ok=True, tool_count=5, tools_tokens=1234)}
+    state = _make_state(config=config, mcp_probes=probes)
+    report = build_report(state)
+    github = next(e for e in report["composition"] if e["source"] == "mcp:github")
+    assert github["tokens_source"] == "probe+tiktoken"
+    assert github["tokens"] == 1234
+
+
+def test_build_report_probe_failure_renders_unmeasured_with_note() -> None:
+    """A failed probe keeps the composition row unmeasured, but notes the failure."""
+    from unclog.scan.mcp_probe import ProbeResult
+
+    config = ClaudeConfig(mcp_servers={"bad": McpServer(name="bad")})
+    probes = {
+        "bad": ProbeResult(
+            name="bad",
+            ok=False,
+            error="command not found: bad-server",
+            stderr_tail="bad-server: not found",
+        ),
+    }
+    state = _make_state(config=config, mcp_probes=probes)
+    report = build_report(state)
+    row = next(e for e in report["composition"] if e["source"] == "mcp:bad")
+    assert row["tokens_source"] == "unmeasured"
+    assert row["tokens"] is None
+    assert "probe failed" in row["note"]
 
 
 def test_render_json_is_valid_json_with_stable_keys() -> None:
@@ -298,6 +345,214 @@ def test_render_plain_surfaces_project_scoped_mcp_label() -> None:
     state = _make_state(config=config)
     out = render_plain(state)
     assert "2 MCP servers (1 project-scoped)" in out
+
+
+def _hook_record(event: str, command: str, *, scope: str = "global"):  # type: ignore[no-untyped-def]
+    from unclog.scan.config import Hook
+
+    return Hook(
+        event=event,
+        matcher=None,
+        command=command,
+        source_scope=scope,
+        source_path=Path(f"/fake/{scope}/settings.json"),
+    )
+
+
+def _project_scope_with_hooks(path: Path, hooks: tuple):  # type: ignore[no-untyped-def]
+    from unclog.scan.project import ProjectScope
+
+    return ProjectScope(
+        path=path,
+        name=path.name,
+        exists=True,
+        claude_md_path=path / "CLAUDE.md",
+        claude_md_text="",
+        claude_md_bytes=0,
+        claude_local_md_path=path / "CLAUDE.local.md",
+        claude_local_md_text="",
+        claude_local_md_bytes=0,
+        has_claudeignore=False,
+        hooks=hooks,
+    )
+
+
+def test_inventory_counts_hooks_across_scopes() -> None:
+    settings = Settings(hooks=(_hook_record("SessionStart", "seed"),))
+    project = _project_scope_with_hooks(
+        Path("/tmp/a"),
+        (
+            _hook_record("UserPromptSubmit", "local", scope="project"),
+            _hook_record("PreToolUse", "audit", scope="project"),
+        ),
+    )
+    state = _make_state(settings=settings, project_scopes=(project,))
+    report = build_report(state)
+    assert report["inventory"]["hooks"] == 3
+    assert report["inventory"]["hooks_global"] == 1
+    assert report["inventory"]["hooks_project"] == 2
+
+
+def test_render_plain_surfaces_hooks_label_with_project_breakdown() -> None:
+    settings = Settings(hooks=(_hook_record("SessionStart", "g"),))
+    project = _project_scope_with_hooks(
+        Path("/tmp/a"), (_hook_record("UserPromptSubmit", "p", scope="project"),)
+    )
+    state = _make_state(settings=settings, project_scopes=(project,))
+    out = render_plain(state)
+    assert "2 hooks (1 project-scoped)" in out
+
+
+def test_render_plain_surfaces_heavy_hook_informational_finding() -> None:
+    settings = Settings(hooks=(_hook_record("SessionStart", "echo primed"),))
+    state = _make_state(settings=settings)
+    out = render_plain(state)
+    assert "heavy_hook" in out or "SessionStart hook fires every prompt" in out
+
+
+def test_projects_audited_includes_claude_md_token_counts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from unclog.app import run_scan
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text("# project rules\n" + ("body\n" * 20), encoding="utf-8")
+    state = run_scan(project=project, cwd=tmp_path)
+    report = build_report(state)
+    audited = report["projects_audited"][0]
+    assert audited["claude_md_tokens"] > 0
+    assert audited["claude_local_md_tokens"] == 0
+
+
+def test_list_claude_md_plain_shows_global_and_projects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from unclog.app import run_scan
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    (claude_home / "CLAUDE.md").write_text("# global\n" + ("rule\n" * 10), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text("# project\nhello\n", encoding="utf-8")
+
+    state = run_scan(project=project, cwd=tmp_path)
+    out = render_claude_md_listing_plain(state)
+    assert "Auto-injected context files found" in out
+    assert "global CLAUDE.md" in out
+    assert "project CLAUDE.md" in out
+    assert "auto-memory" in out
+    assert "proj" in out
+    assert "tok" in out
+    assert "totals:" in out
+
+
+def test_list_claude_md_plain_includes_auto_memory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Auto-memory MEMORY.md is discovered under ~/.claude/projects/<encoded>/memory/."""
+    from unclog.app import run_scan
+    from unclog.util.paths import encode_project_path
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    memory_dir = claude_home / "projects" / encode_project_path(project) / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text(
+        "- [user](user.md) — Tom, senior engineer\n" * 30,
+        encoding="utf-8",
+    )
+
+    state = run_scan(project=project, cwd=tmp_path)
+    out = render_claude_md_listing_plain(state)
+    # Memory file should show up in the memory section.
+    assert "MEMORY.md" in out
+    # Memory contribution should roll up into the total.
+    project_scope = state.project_scopes[0]
+    assert project_scope.memory_md_text != ""
+    assert project_scope.memory_md_bytes > 0
+
+
+def test_composition_includes_auto_memory_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The baseline composition should surface auto-memory as its own row."""
+    from unclog.app import run_scan
+    from unclog.util.paths import encode_project_path
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    memory_dir = claude_home / "projects" / encode_project_path(project) / "memory"
+    memory_dir.mkdir(parents=True)
+    (memory_dir / "MEMORY.md").write_text("line\n" * 50, encoding="utf-8")
+
+    state = run_scan(project=project, cwd=tmp_path)
+    report = build_report(state)
+    memory_entries = [e for e in report["composition"] if e["source"].startswith("auto-memory")]
+    assert len(memory_entries) == 1
+    assert memory_entries[0]["tokens"] > 0
+    assert memory_entries[0]["tokens_source"] == "tiktoken"
+
+
+def test_list_claude_md_flags_missing_project(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Stale entries in ~/.claude.json should surface as path_missing rows."""
+    from unclog.app import run_scan
+    from unclog.scan.config import ClaudeConfig, ProjectRecord
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    missing_path = tmp_path / "does-not-exist"
+    config = ClaudeConfig(
+        projects={missing_path: ProjectRecord(path=missing_path)},
+    )
+    state = _make_state(config=config)
+    # _make_state doesn't run _scan_projects; build one manually.
+    from unclog.scan.project import ProjectScope
+
+    missing_scope = ProjectScope(
+        path=missing_path,
+        name="does-not-exist",
+        exists=False,
+        claude_md_path=missing_path / "CLAUDE.md",
+        claude_md_text="",
+        claude_md_bytes=0,
+        claude_local_md_path=missing_path / "CLAUDE.local.md",
+        claude_local_md_text="",
+        claude_local_md_bytes=0,
+        has_claudeignore=False,
+    )
+    from dataclasses import replace
+
+    state = replace(state, project_scopes=(missing_scope,))
+    out = render_claude_md_listing_plain(state)
+    assert "path missing" in out.lower()
+    del run_scan  # unused import guard
+
+
+def test_cli_list_claude_md_exits_after_listing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    result = runner.invoke(app, ["--list-claude-md"])
+    assert result.exit_code == 0
+    assert "Auto-injected context files found" in result.stdout
+    # Should NOT run the normal report.
+    assert "baseline" not in result.stdout
 
 
 def test_render_plain_lists_findings_with_selection_markers() -> None:

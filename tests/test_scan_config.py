@@ -144,3 +144,72 @@ def test_load_settings_raises_on_malformed_json(tmp_path: Path) -> None:
     settings_path.write_text("}}garbage", encoding="utf-8")
     with pytest.raises(ConfigParseError):
         load_settings(settings_path)
+
+
+def test_load_settings_parses_nested_hooks(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    _write_json(
+        settings_path,
+        {
+            "hooks": {
+                "SessionStart": [
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {"type": "command", "command": "echo hi"},
+                            {"type": "command", "command": "date"},
+                        ],
+                    }
+                ],
+                "PreToolUse": [
+                    {
+                        "hooks": [{"type": "command", "command": "audit-tool"}],
+                    }
+                ],
+                "UnknownEvent": "not-a-list",
+            }
+        },
+    )
+    s = load_settings(settings_path, source_scope="global")
+    assert s is not None
+    events = [h.event for h in s.hooks]
+    commands = [h.command for h in s.hooks]
+    assert sorted(events) == ["PreToolUse", "SessionStart", "SessionStart"]
+    assert "echo hi" in commands
+    assert "date" in commands
+    assert "audit-tool" in commands
+    for hook in s.hooks:
+        assert hook.source_scope == "global"
+        assert hook.source_path == settings_path
+
+
+def test_load_settings_hooks_skip_empty_commands(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    _write_json(
+        settings_path,
+        {
+            "hooks": {
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {"type": "command", "command": ""},
+                            {"type": "command", "command": "   "},
+                            {"type": "command"},  # no command key
+                            {"type": "command", "command": "real"},
+                        ]
+                    }
+                ]
+            }
+        },
+    )
+    s = load_settings(settings_path)
+    assert s is not None
+    assert [h.command for h in s.hooks] == ["real"]
+
+
+def test_load_settings_hooks_absent_means_empty_tuple(tmp_path: Path) -> None:
+    settings_path = tmp_path / "settings.json"
+    _write_json(settings_path, {"model": "claude-opus-4-7"})
+    s = load_settings(settings_path)
+    assert s is not None
+    assert s.hooks == ()
