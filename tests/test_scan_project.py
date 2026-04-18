@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from unclog.scan.project import resolve_project_paths, scan_project
@@ -100,3 +101,59 @@ def test_resolve_paths_empty_when_no_known_and_cwd_not_project(tmp_path: Path) -
         known_projects=(),
     )
     assert out == ()
+
+
+def test_scan_project_loads_hooks_from_both_settings_files(tmp_path: Path) -> None:
+    project = tmp_path / "app"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "settings.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": "seed-context"}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (project / ".claude" / "settings.local.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": "local-notes"}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    scope = scan_project(project)
+    events = sorted(h.event for h in scope.hooks)
+    commands = sorted(h.command for h in scope.hooks)
+    assert events == ["SessionStart", "UserPromptSubmit"]
+    assert commands == ["local-notes", "seed-context"]
+    assert all(h.source_scope == "project" for h in scope.hooks)
+
+
+def test_scan_project_returns_empty_hooks_when_absent(tmp_path: Path) -> None:
+    project = tmp_path / "quiet"
+    project.mkdir()
+    scope = scan_project(project)
+    assert scope.hooks == ()
+
+
+def test_scan_project_skips_malformed_settings_without_crashing(tmp_path: Path) -> None:
+    project = tmp_path / "broken"
+    (project / ".claude").mkdir(parents=True)
+    (project / ".claude" / "settings.json").write_text("{{not json", encoding="utf-8")
+    (project / ".claude" / "settings.local.json").write_text(
+        json.dumps(
+            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "ok"}]}]}}
+        ),
+        encoding="utf-8",
+    )
+    scope = scan_project(project)
+    assert [h.command for h in scope.hooks] == ["ok"]

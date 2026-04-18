@@ -57,6 +57,23 @@ class ClaudeConfig:
 
 
 @dataclass(frozen=True)
+class Hook:
+    """A single hook command registered under a Claude Code event.
+
+    Every hook that fires injects its stdout into context. Events like
+    ``SessionStart`` and ``UserPromptSubmit`` fire every turn, so their
+    hooks are paid for on every prompt. unclog surfaces hooks so users
+    can audit what's running silently on their behalf.
+    """
+
+    event: str
+    matcher: str | None
+    command: str
+    source_scope: str  # "global", "project", "plugin"
+    source_path: Path
+
+
+@dataclass(frozen=True)
 class Settings:
     """Parsed ``settings.json`` (global or project-scoped)."""
 
@@ -64,6 +81,7 @@ class Settings:
     permissions_allow: tuple[str, ...] = ()
     permissions_deny: tuple[str, ...] = ()
     model: str | None = None
+    hooks: tuple[Hook, ...] = ()
     raw: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
 
 
@@ -163,8 +181,52 @@ def load_claude_config(path: Path) -> ClaudeConfig | None:
     )
 
 
-def load_settings(path: Path) -> Settings | None:
+def _parse_hooks(raw: object, *, source_scope: str, source_path: Path) -> tuple[Hook, ...]:
+    """Flatten the nested ``hooks`` block from a settings.json.
+
+    Claude Code's shape is ``{event: [{matcher, hooks: [{type, command}]}]}``
+    — two layers of arrays plus an event key. We flatten into a single
+    tuple of :class:`Hook` records, one per command, so downstream code
+    treats them uniformly regardless of which event or matcher they came
+    from. Unknown shapes are skipped silently rather than erroring.
+    """
+    if not isinstance(raw, dict):
+        return ()
+    out: list[Hook] = []
+    for event_name, event_entries in raw.items():
+        if not isinstance(event_name, str) or not isinstance(event_entries, list):
+            continue
+        for entry in event_entries:
+            if not isinstance(entry, dict):
+                continue
+            matcher = entry.get("matcher") if isinstance(entry.get("matcher"), str) else None
+            commands = entry.get("hooks")
+            if not isinstance(commands, list):
+                continue
+            for cmd in commands:
+                if not isinstance(cmd, dict):
+                    continue
+                command_str = cmd.get("command")
+                if not isinstance(command_str, str) or not command_str.strip():
+                    continue
+                out.append(
+                    Hook(
+                        event=event_name,
+                        matcher=matcher,
+                        command=command_str,
+                        source_scope=source_scope,
+                        source_path=source_path,
+                    )
+                )
+    return tuple(out)
+
+
+def load_settings(path: Path, *, source_scope: str = "global") -> Settings | None:
     """Load a ``settings.json`` (global or project-scoped).
+
+    ``source_scope`` is stamped onto each parsed :class:`Hook` so the
+    UI can distinguish a hook running globally on every project from
+    one that only runs inside a specific project.
 
     Returns ``None`` if the file does not exist. Raises
     :class:`ConfigParseError` if it exists but is not valid JSON.
@@ -196,10 +258,13 @@ def load_settings(path: Path) -> Settings | None:
         permissions_allow = ()
         permissions_deny = ()
 
+    hooks = _parse_hooks(raw.get("hooks"), source_scope=source_scope, source_path=path)
+
     return Settings(
         enabled_plugins=enabled_plugins,
         permissions_allow=permissions_allow,
         permissions_deny=permissions_deny,
         model=raw.get("model") if isinstance(raw.get("model"), str) else None,
+        hooks=hooks,
         raw=MappingProxyType(dict(raw)),
     )

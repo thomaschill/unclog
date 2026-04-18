@@ -32,6 +32,7 @@ FindingType = Literal[
     "scope_mismatch_global_to_project",
     "scope_mismatch_project_to_global",
     "missing_claudeignore",
+    "heavy_hook",
 ]
 
 ScopeKind = Literal["global", "project", "global_to_project", "project_to_global"]

@@ -29,6 +29,7 @@ def _state(
     latest_session: SessionSystemBlock | None = None,
     activity: ActivityIndex | None = None,
     mcp_invocations: dict[str, int] | None = None,
+    project_scopes: tuple = (),
 ) -> InstallationState:
     return InstallationState(
         generated_at=NOW,
@@ -49,6 +50,7 @@ def _state(
             activity=activity if activity is not None else ActivityIndex(),
             mcp_invocations=MappingProxyType(mcp_invocations or {}),
         ),
+        project_scopes=project_scopes,
     )
 
 
@@ -399,3 +401,80 @@ def _project_record(path: Path):  # type: ignore[no-untyped-def]
     from unclog.scan.config import ProjectRecord
 
     return ProjectRecord(path=path)
+
+
+# --- heavy_hook ---------------------------------------------------------
+
+
+def _hook(event: str, command: str, *, scope: str = "global", matcher: str | None = None):  # type: ignore[no-untyped-def]
+    from unclog.scan.config import Hook
+
+    return Hook(
+        event=event,
+        matcher=matcher,
+        command=command,
+        source_scope=scope,
+        source_path=Path(f"/fake/{scope}/settings.json"),
+    )
+
+
+def _project_scope(path: Path, *, hooks: tuple = ()):  # type: ignore[no-untyped-def]
+    from unclog.scan.project import ProjectScope
+
+    return ProjectScope(
+        path=path,
+        name=path.name,
+        exists=True,
+        claude_md_path=path / "CLAUDE.md",
+        claude_md_text="",
+        claude_md_bytes=0,
+        claude_local_md_path=path / "CLAUDE.local.md",
+        claude_local_md_text="",
+        claude_local_md_bytes=0,
+        has_claudeignore=False,
+        hooks=hooks,
+    )
+
+
+def test_heavy_hook_flags_session_start_and_user_prompt_submit() -> None:
+    settings = Settings(
+        hooks=(
+            _hook("SessionStart", "echo primed"),
+            _hook("UserPromptSubmit", "inject-notes.sh"),
+            _hook("PreToolUse", "audit-tool"),  # not every-turn; skipped
+        )
+    )
+    state = _state(settings=settings)
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    heavy = [f for f in findings if f.type == "heavy_hook"]
+    assert len(heavy) == 2
+    events = sorted(f.evidence["event"] for f in heavy)
+    assert events == ["SessionStart", "UserPromptSubmit"]
+    assert all(f.action.primitive == "flag_only" for f in heavy)
+    assert all(f.token_savings is None for f in heavy)
+
+
+def test_heavy_hook_covers_project_scoped_hooks(tmp_path: Path) -> None:
+    project = tmp_path / "app"
+    scope = _project_scope(
+        project, hooks=(_hook("UserPromptSubmit", "ctx.sh", scope="project"),)
+    )
+    state = _state(project_scopes=(scope,))
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    heavy = [f for f in findings if f.type == "heavy_hook"]
+    assert len(heavy) == 1
+    assert heavy[0].scope.kind == "project"
+    assert heavy[0].scope.project_path == project
+    assert heavy[0].evidence["source_scope"] == "project"
+
+
+def test_heavy_hook_emits_nothing_when_only_tool_events_registered() -> None:
+    settings = Settings(
+        hooks=(
+            _hook("PreToolUse", "a"),
+            _hook("PostToolUse", "b"),
+        )
+    )
+    state = _state(settings=settings)
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    assert [f for f in findings if f.type == "heavy_hook"] == []

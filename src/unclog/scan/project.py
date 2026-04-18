@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from unclog.scan.config import ConfigParseError, Hook, load_settings
+
 
 @dataclass(frozen=True)
 class ProjectScope:
@@ -42,6 +44,11 @@ class ProjectScope:
     memory_md_path: Path = Path()
     memory_md_text: str = ""
     memory_md_bytes: int = 0
+    # Project-scoped hooks parsed from ``<project>/.claude/settings.json``
+    # and ``<project>/.claude/settings.local.json``. Flattened into a
+    # single tuple so consumers don't re-walk the nested event/matcher
+    # shape. Empty when no hooks are configured.
+    hooks: tuple[Hook, ...] = ()
 
 
 def _read_text_if_exists(path: Path) -> str:
@@ -63,15 +70,15 @@ def scan_project(
     entirely, surface it as a stale-entry warning, or include it in
     findings.
 
-    Name resolution is last-segment-of-path in v0.1. Project-config
-    name overrides are listed in spec §8 as future work (we don't read
-    ``.claude/settings.json``'s name-related fields yet).
-
     ``memory_file`` optionally points to the project's auto-memory
     index (``~/.claude/projects/<encoded>/memory/MEMORY.md``). When
     provided and the file exists, its contents feed the baseline-token
     accounting. When ``None``, memory fields stay empty — tests that
     don't care about memory can omit it.
+
+    Name resolution is last-segment-of-path in v0.1. Project-config
+    name overrides are listed in spec §8 as future work (we don't read
+    ``.claude/settings.json``'s name-related fields yet).
     """
     path = project_path.expanduser()
     # Best-effort resolve; non-existent paths keep their literal form.
@@ -91,6 +98,8 @@ def scan_project(
     memory_path = memory_file if memory_file is not None else Path()
     memory_text = _read_text_if_exists(memory_path) if memory_file is not None else ""
 
+    hooks = _load_project_hooks(resolved) if exists else ()
+
     return ProjectScope(
         path=resolved,
         name=resolved.name or str(resolved),
@@ -105,7 +114,28 @@ def scan_project(
         memory_md_path=memory_path,
         memory_md_text=memory_text,
         memory_md_bytes=len(memory_text.encode("utf-8")),
+        hooks=hooks,
     )
+
+
+def _load_project_hooks(project_path: Path) -> tuple[Hook, ...]:
+    """Parse hooks from ``<project>/.claude/settings.json`` + ``settings.local.json``.
+
+    Both files are optional. Unparseable JSON is swallowed — a hook
+    scanner should not be the thing that crashes a scan. Returns an
+    empty tuple when nothing is configured.
+    """
+    collected: list[Hook] = []
+    for filename in ("settings.json", "settings.local.json"):
+        settings_path = project_path / ".claude" / filename
+        try:
+            settings = load_settings(settings_path, source_scope="project")
+        except ConfigParseError:
+            continue
+        if settings is None:
+            continue
+        collected.extend(settings.hooks)
+    return tuple(collected)
 
 
 def resolve_project_paths(

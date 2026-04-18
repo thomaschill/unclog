@@ -54,8 +54,15 @@ _INVENTORY_CHIP_COLOUR: dict[str, str] = {
     "commands": "#a78bfa",
     "plugins": "#e879f9",
     "mcp": "#fb923c",
+    "hooks": "#f43f5e",
     "projects": "#a3a3a3",
 }
+
+# Hook events that fire on every prompt — the highest-cost ones to leave
+# unaudited. ``PreToolUse`` / ``PostToolUse`` fire per tool invocation
+# which is usually per turn in practice but we only surface the
+# guaranteed-every-turn events so the "heavy" signal stays truthful.
+_EVERY_TURN_HOOK_EVENTS: frozenset[str] = frozenset({"SessionStart", "UserPromptSubmit"})
 
 
 def _mcp_attribution(session: SessionSystemBlock, counter: TokenCounter) -> dict[str, int]:
@@ -275,6 +282,25 @@ def _mcp_label(inv: dict[str, Any]) -> str:
     return f"{total} MCP servers"
 
 
+def _hooks_label(inv: dict[str, Any]) -> str:
+    """Render the hooks count with project-scope breakdown when relevant.
+
+    Claude Code fires hooks silently on every session; every hook's
+    stdout is injected into context, so users routinely underestimate
+    what is running on their behalf. Always surface the count, even
+    zero, so the absence is explicit.
+    """
+    total = inv.get("hooks", 0)
+    project_scoped = inv.get("hooks_project", 0)
+    if total == 0:
+        return "0 hooks"
+    if project_scoped and project_scoped == total:
+        return f"{total} hooks (project-scoped)"
+    if project_scoped:
+        return f"{total} hooks ({project_scoped} project-scoped)"
+    return f"{total} hooks"
+
+
 def _inventory(state: InstallationState) -> dict[str, int]:
     gs = state.global_scope
     global_mcp = len(gs.config.mcp_servers) if gs.config else 0
@@ -282,6 +308,8 @@ def _inventory(state: InstallationState) -> dict[str, int]:
     if gs.config:
         for project in gs.config.projects.values():
             project_mcp += len(project.mcp_servers)
+    global_hooks = len(gs.settings.hooks) if gs.settings else 0
+    project_hooks = sum(len(p.hooks) for p in state.project_scopes)
     return {
         "skills": len(gs.skills),
         "agents": len(gs.agents),
@@ -290,6 +318,9 @@ def _inventory(state: InstallationState) -> dict[str, int]:
         "mcp_servers": global_mcp + project_mcp,
         "mcp_servers_global": global_mcp,
         "mcp_servers_project": project_mcp,
+        "hooks": global_hooks + project_hooks,
+        "hooks_global": global_hooks,
+        "hooks_project": project_hooks,
         "projects_known": len(gs.config.projects) if gs.config else 0,
     }
 
@@ -644,7 +675,7 @@ def render_plain(state: InstallationState) -> str:
         "inventory: "
         f"{inv['skills']} skills | {inv['agents']} agents | "
         f"{inv['commands']} commands | {inv['plugins']} plugins | "
-        f"{_mcp_label(inv)} | "
+        f"{_mcp_label(inv)} | {_hooks_label(inv)} | "
         f"{inv['projects_known']} known projects"
     )
     if report["projects_audited"]:
@@ -744,12 +775,20 @@ def _render_inventory_chips(inv: dict[str, int]) -> Text:
     elif inv.get("mcp_servers_project"):
         mcp_label = f"MCP ({inv['mcp_servers_project']} project-scoped)"
 
+    hooks_total = inv.get("hooks", 0)
+    hooks_label = "hooks"
+    if hooks_total and inv.get("hooks_project") == hooks_total:
+        hooks_label = "hooks (project-scoped)"
+    elif inv.get("hooks_project"):
+        hooks_label = f"hooks ({inv['hooks_project']} project-scoped)"
+
     chips: list[tuple[str, str, int]] = [
         ("skills", "skills", inv["skills"]),
         ("agents", "agents", inv["agents"]),
         ("commands", "commands", inv["commands"]),
         ("plugins", "plugins", inv["plugins"]),
         ("mcp", mcp_label, inv["mcp_servers"]),
+        ("hooks", hooks_label, hooks_total),
         ("projects", "projects", inv["projects_known"]),
     ]
 
@@ -774,6 +813,7 @@ _INFORMATIONAL_GROUP_LABEL: dict[str, str] = {
     "missing_claudeignore": "missing .claudeignore",
     "disabled_plugin_residue": "recently-disabled plugin residue",
     "claude_md_dead_ref": "CLAUDE.md dead references",
+    "heavy_hook": "every-turn hooks",
 }
 
 

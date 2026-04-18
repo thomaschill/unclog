@@ -26,6 +26,7 @@ from unclog.findings.detectors import (
     claude_md_oversized,
     dead_mcp,
     disabled_plugin_residue,
+    heavy_hook,
     missing_claudeignore,
     scope_mismatch,
     stale_plugin,
@@ -92,4 +93,5 @@ def detect(
     )
     findings.extend(disabled_plugin_residue.detect(state, activity, thresholds, now=reference))
     findings.extend(missing_claudeignore.detect(state, activity, thresholds, now=reference))
+    findings.extend(heavy_hook.detect(state, activity, thresholds, now=reference))
     return findings
