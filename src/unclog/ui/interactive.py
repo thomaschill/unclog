@@ -164,6 +164,11 @@ def run_interactive(
     # findings, render the manual-remediation hints — even if curate is
     # also available, since the hints are independent actionable next
     # steps (".claudeignore" creation, etc.).
+    #
+    # When curate is available, defer the countdown + retention warn
+    # out of primary's _execute so the user sees one cumulative
+    # "N,NNN → M,MMM" animation at the end rather than two separate ones.
+    defer_final_tally = bool(curate_findings)
     primary_result: ApplyResult | None = None
     if applicable:
         primary_result = _run_primary_picker(
@@ -174,6 +179,7 @@ def run_interactive(
             project_paths=project_paths,
             animate=not options.no_animation,
             baseline_tokens=baseline_tokens,
+            include_final_tally=not defer_final_tally,
         )
     elif findings:
         _render_informational_next_steps(findings, console)
@@ -181,13 +187,7 @@ def run_interactive(
     if not curate_findings:
         return primary_result
 
-    # Offer curate. The baseline shown in the countdown is the
-    # post-primary baseline so the "was X now Y" reads truthfully.
-    post_primary_baseline: int | None = None
-    if baseline_tokens is not None:
-        saved = primary_result.token_savings if primary_result is not None else 0
-        post_primary_baseline = baseline_tokens - saved
-
+    primary_savings = primary_result.token_savings if primary_result is not None else 0
     curate_result = _maybe_run_curate(
         curate_findings,
         active_prompter=active_prompter,
@@ -195,8 +195,27 @@ def run_interactive(
         claude_home=claude_home,
         project_paths=project_paths,
         animate=not options.no_animation,
-        baseline_tokens=post_primary_baseline,
+        baseline_tokens=baseline_tokens,
+        previous_savings=primary_savings,
     )
+
+    # If curate was declined but primary applied, the deferred countdown
+    # still needs to fire — otherwise the user never sees the animation
+    # for their primary savings.
+    if (
+        curate_result is None
+        and primary_result is not None
+        and primary_savings
+        and baseline_tokens is not None
+    ):
+        _render_final_tally(
+            console=console,
+            claude_home=claude_home,
+            baseline_tokens=baseline_tokens,
+            tokens_saved=primary_savings,
+            animate=not options.no_animation,
+        )
+
     return curate_result if curate_result is not None else primary_result
 
 
@@ -209,6 +228,7 @@ def _run_primary_picker(
     project_paths: tuple[Path, ...],
     animate: bool,
     baseline_tokens: int | None,
+    include_final_tally: bool = True,
 ) -> ApplyResult | None:
     # Sort descending by token weight so the biggest wins are at the top
     # of the picker regardless of check state. Entries without a measured
@@ -238,6 +258,7 @@ def _run_primary_picker(
         console=console,
         animate=animate,
         baseline_tokens=baseline_tokens,
+        include_final_tally=include_final_tally,
     )
 
 
@@ -250,6 +271,7 @@ def _maybe_run_curate(
     project_paths: tuple[Path, ...],
     animate: bool,
     baseline_tokens: int | None,
+    previous_savings: int = 0,
 ) -> ApplyResult | None:
     """Offer the opt-in per-item curate picker; return apply result or None.
 
@@ -284,6 +306,7 @@ def _maybe_run_curate(
         console=console,
         animate=animate,
         baseline_tokens=baseline_tokens,
+        previous_savings=previous_savings,
     )
 
 
@@ -308,7 +331,17 @@ def _execute(
     console: Console,
     animate: bool,
     baseline_tokens: int | None,
+    include_final_tally: bool = True,
+    previous_savings: int = 0,
 ) -> ApplyResult | None:
+    """Apply ``findings``, render the result, and optionally show the tally.
+
+    ``include_final_tally=False`` skips the countdown + share stat +
+    retention warn so the caller can show a single cumulative version
+    later. ``previous_savings`` offsets the countdown's starting point
+    so the animation represents *total session* savings, not just this
+    call's.
+    """
     paths = ClaudePaths(home=claude_home)
     result = apply_findings(
         findings,
@@ -317,21 +350,52 @@ def _execute(
         project_paths=project_paths,
     )
     _render_result(result, console)
-    if baseline_tokens is not None and result.token_savings:
-        console.print("")
-        animate_countdown(
-            console,
-            before=baseline_tokens,
-            after=baseline_tokens - result.token_savings,
-            animate=animate,
-        )
-        render_share_stat(
-            console,
-            baseline_tokens=baseline_tokens,
-            tokens_saved=result.token_savings,
-        )
-    _maybe_warn_retention(paths, console)
+    if include_final_tally:
+        total_saved = previous_savings + result.token_savings
+        if baseline_tokens is not None and total_saved:
+            console.print("")
+            animate_countdown(
+                console,
+                before=baseline_tokens,
+                after=baseline_tokens - total_saved,
+                animate=animate,
+            )
+            render_share_stat(
+                console,
+                baseline_tokens=baseline_tokens,
+                tokens_saved=total_saved,
+            )
+        _maybe_warn_retention(paths, console)
     return result
+
+
+def _render_final_tally(
+    *,
+    console: Console,
+    claude_home: Path,
+    baseline_tokens: int,
+    tokens_saved: int,
+    animate: bool,
+) -> None:
+    """Deferred countdown + retention warn for the primary-only path.
+
+    When curate is offered and declined but primary applied, we need to
+    fire the tally that primary's ``_execute`` skipped (since it was
+    waiting to be combined with curate).
+    """
+    console.print("")
+    animate_countdown(
+        console,
+        before=baseline_tokens,
+        after=baseline_tokens - tokens_saved,
+        animate=animate,
+    )
+    render_share_stat(
+        console,
+        baseline_tokens=baseline_tokens,
+        tokens_saved=tokens_saved,
+    )
+    _maybe_warn_retention(ClaudePaths(home=claude_home), console)
 
 
 def _render_result(result: ApplyResult, console: Console) -> None:
