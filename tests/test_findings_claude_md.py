@@ -103,6 +103,25 @@ def test_dead_ref_none_when_all_paths_exist(tmp_path: Path) -> None:
     assert not any(f.type == "claude_md_dead_ref" for f in findings)
 
 
+def test_transitive_at_import_points_at_intermediate_file(tmp_path: Path) -> None:
+    """Deep @-import chain with a broken leaf → open_in_editor on the parent."""
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    # Root -> mid.md -> nope.md (missing)
+    mid = claude_home / "mid.md"
+    mid.write_text("@./nope.md\n", encoding="utf-8")
+    md = "@./mid.md\n"
+    state = _state(claude_home=claude_home, global_md=md)
+    findings = detect(state, ActivityIndex(), _defaults(), now=NOW)
+    dead = [f for f in findings if f.type == "claude_md_dead_ref"]
+    # One transitive finding with action pointing at mid.md, not root.
+    transitive = [f for f in dead if f.action.path == mid]
+    assert len(transitive) == 1
+    assert transitive[0].action.primitive == "open_in_editor"
+    assert transitive[0].auto_checked is False
+    assert transitive[0].evidence["root_path"].endswith("CLAUDE.md")
+
+
 # -- claude_md_duplicate ----------------------------------------------------
 
 

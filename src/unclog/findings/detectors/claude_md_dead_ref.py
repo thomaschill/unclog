@@ -41,12 +41,25 @@ def detect(
     for scoped in context.files:
         if not scoped.parsed.dead_refs:
             continue
-        line_only = tuple(r for r in scoped.parsed.dead_refs if r.line_only)
-        mixed = tuple(r for r in scoped.parsed.dead_refs if not r.line_only)
+        # Root-file refs (including root-level @-imports at depth=1) flow
+        # through the existing line-only / mixed split — the action path
+        # is this scope's CLAUDE.md so line-stripping is safe.
+        root_refs = tuple(
+            r for r in scoped.parsed.dead_refs if r.import_depth <= 1
+        )
+        # Transitive @-imports (depth ≥ 2) live in intermediate files;
+        # they group by ``import_parent`` into manual-review findings so
+        # the user sees *which file* to edit.
+        transitive = tuple(
+            r for r in scoped.parsed.dead_refs if r.import_depth > 1
+        )
+        line_only = tuple(r for r in root_refs if r.line_only)
+        mixed = tuple(r for r in root_refs if not r.line_only)
         if line_only:
             findings.append(_build_line_only(scoped, line_only))
         if mixed:
             findings.append(_build_mixed(scoped, mixed))
+        findings.extend(_build_transitive(scoped, transitive))
     return findings
 
 
@@ -88,6 +101,64 @@ def _build_line_only(scoped: ScopedClaudeMd, refs: tuple[DeadRef, ...]) -> Findi
             "paths": [str(r.resolved) for r in refs],
         },
     )
+
+
+def _build_transitive(
+    scoped: ScopedClaudeMd, refs: tuple[DeadRef, ...]
+) -> list[Finding]:
+    """One open_in_editor finding per intermediate file with broken @-imports.
+
+    Transitive imports live in files Claude Code inlines via the root
+    CLAUDE.md; we can't strip a line from the root to fix them. Grouping
+    by parent file points the user at the exact file they need to edit.
+    """
+    if not refs:
+        return []
+    by_parent: dict[Path, list[DeadRef]] = {}
+    for ref in refs:
+        parent = ref.import_parent
+        if parent is None:
+            continue
+        by_parent.setdefault(parent, []).append(ref)
+    label = _label(scoped)
+    findings: list[Finding] = []
+    for parent, parent_refs in sorted(by_parent.items(), key=lambda kv: str(kv[0])):
+        lines = tuple(sorted({r.line_number for r in parent_refs}))
+        first_line = lines[0] if lines else None
+        depths = sorted({r.import_depth for r in parent_refs})
+        findings.append(
+            Finding(
+                id=(
+                    f"claude_md_dead_ref:{scoped.parsed.path}:import:{parent}"
+                ),
+                type="claude_md_dead_ref",
+                title=(
+                    f"Fix {len(parent_refs)} broken @-import(s) in {parent.name} "
+                    f"(reached via {label})"
+                ),
+                reason=(
+                    "transitive @-import targets no longer exist — edit the "
+                    "intermediate file to remove or retarget them"
+                ),
+                scope=_scope_for(scoped),
+                action=Action(
+                    primitive="open_in_editor",
+                    path=parent,
+                    line_numbers=(first_line,) if first_line is not None else (),
+                ),
+                auto_checked=False,
+                token_savings=None,
+                evidence={
+                    "path": str(parent),
+                    "root_path": str(scoped.parsed.path),
+                    "variant": scoped.variant,
+                    "line_numbers": list(lines),
+                    "paths": [str(r.resolved) for r in parent_refs],
+                    "import_depths": depths,
+                },
+            )
+        )
+    return findings
 
 
 def _build_mixed(scoped: ScopedClaudeMd, refs: tuple[DeadRef, ...]) -> Finding:

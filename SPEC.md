@@ -240,6 +240,7 @@ CLAUDE.md is the highest-leverage target. Approach:
 2. **Section parsing**: parse markdown into a section tree by heading level. Each section has a path (heading chain), byte range, and token cost.
 3. **Lint passes**:
    - Dead file refs: regex out anything that looks like a path, stat it. Lines that only consist of a dead ref get flagged for removal. Lines with a dead ref mixed with prose get flagged for manual edit.
+   - `@path` imports: Claude Code inlines the contents of `@path` references transitively. Walk the import tree breadth-first, cap depth at 5, dedupe visited files. Broken root-level imports flow through the same line-only/mixed split as regular dead refs; broken transitive imports (depth ≥2) surface as one `open_in_editor` finding per intermediate file so the user sees exactly which file to edit.
    - Exact duplicate sections across global/project: hash section body, match.
    - Oversized section: `> 1,000` tokens → flag with "open in editor" action.
    - Single-project relevance: if section body mentions only paths under one project, suggest moving.

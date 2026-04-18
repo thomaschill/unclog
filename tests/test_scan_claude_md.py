@@ -139,3 +139,83 @@ def test_home_ref_is_expanded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     parsed = parse_claude_md(path, text, _StubCounter())
     assert len(parsed.dead_refs) == 1
     assert parsed.dead_refs[0].resolved == empty_home / "ghost.md"
+
+
+def test_at_import_live_target_tracked(tmp_path: Path) -> None:
+    (tmp_path / "child.md").write_text("# Child\n", encoding="utf-8")
+    path = tmp_path / "CLAUDE.md"
+    text = "See @child.md for details\n"
+    parsed = parse_claude_md(path, text, _StubCounter())
+    # Live import shows up in live_imports, not dead_refs.
+    assert parsed.dead_refs == ()
+    assert len(parsed.live_imports) == 1
+    assert parsed.live_imports[0].name == "child.md"
+
+
+def test_at_import_missing_target_flagged(tmp_path: Path) -> None:
+    path = tmp_path / "CLAUDE.md"
+    text = "@missing.md\n"
+    parsed = parse_claude_md(path, text, _StubCounter())
+    assert len(parsed.dead_refs) == 1
+    ref = parsed.dead_refs[0]
+    assert ref.raw == "@missing.md"
+    assert ref.import_depth == 1
+    assert ref.import_parent == path
+    assert ref.line_only is True
+
+
+def test_at_import_transitive_dead_captures_parent(tmp_path: Path) -> None:
+    (tmp_path / "mid.md").write_text("@./nope.md\n", encoding="utf-8")
+    path = tmp_path / "CLAUDE.md"
+    text = "@./mid.md\n"
+    parsed = parse_claude_md(path, text, _StubCounter())
+    refs_by_depth = {r.import_depth: r for r in parsed.dead_refs}
+    assert 2 in refs_by_depth
+    transitive = refs_by_depth[2]
+    assert transitive.import_parent == tmp_path / "mid.md"
+    assert transitive.line_only is False  # intermediate file — needs editor
+
+
+def test_at_import_chain_caps_at_depth_five(tmp_path: Path) -> None:
+    # Chain: root → d1 → d2 → d3 → d4 → d5 → dead.md
+    # _MAX_IMPORT_DEPTH=5 means we stop BEFORE visiting d5's imports,
+    # so dead.md (at depth 6) should not appear.
+    for i in range(1, 6):
+        (tmp_path / f"d{i}.md").write_text(
+            f"@./d{i + 1}.md\n" if i < 5 else "@./dead.md\n",
+            encoding="utf-8",
+        )
+    path = tmp_path / "CLAUDE.md"
+    text = "@./d1.md\n"
+    parsed = parse_claude_md(path, text, _StubCounter())
+    # d5.md's @-import would resolve to depth 6 — past the cap.
+    assert all(r.resolved.name != "dead.md" for r in parsed.dead_refs)
+
+
+def test_at_import_cycle_does_not_infinite_loop(tmp_path: Path) -> None:
+    (tmp_path / "a.md").write_text("@./b.md\n", encoding="utf-8")
+    (tmp_path / "b.md").write_text("@./a.md\n", encoding="utf-8")
+    path = tmp_path / "CLAUDE.md"
+    text = "@./a.md\n"
+    # Must terminate; visited-set prevents re-scanning a or b.
+    parsed = parse_claude_md(path, text, _StubCounter())
+    assert parsed.dead_refs == ()
+    # Both files are reached once.
+    names = {p.name for p in parsed.live_imports}
+    assert names == {"a.md", "b.md"}
+
+
+def test_at_import_ignored_inside_code_fence(tmp_path: Path) -> None:
+    path = tmp_path / "CLAUDE.md"
+    text = "```\n@missing.md\n```\n"
+    parsed = parse_claude_md(path, text, _StubCounter())
+    assert parsed.dead_refs == ()
+
+
+def test_at_username_not_treated_as_import(tmp_path: Path) -> None:
+    """@anthropic or email-like tokens must not match the import regex."""
+    path = tmp_path / "CLAUDE.md"
+    text = "thanks to @anthropic and user@example.com for support\n"
+    parsed = parse_claude_md(path, text, _StubCounter())
+    assert parsed.dead_refs == ()
+    assert parsed.live_imports == ()
