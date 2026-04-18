@@ -344,17 +344,208 @@ def _projects_audited(state: InstallationState) -> list[dict[str, Any]]:
     the difference between "no findings because nothing's wrong" and
     "no findings because we didn't scan any projects".
     """
+    counter = TiktokenCounter()
     return [
         {
             "path": str(project.path),
             "name": project.name,
             "exists": project.exists,
             "claude_md_bytes": project.claude_md_bytes,
+            "claude_md_tokens": (
+                counter.count(project.claude_md_text) if project.claude_md_text else 0
+            ),
             "claude_local_md_bytes": project.claude_local_md_bytes,
+            "claude_local_md_tokens": (
+                counter.count(project.claude_local_md_text)
+                if project.claude_local_md_text
+                else 0
+            ),
             "has_claudeignore": project.has_claudeignore,
         }
         for project in state.project_scopes
     ]
+
+
+def _claude_md_rows(state: InstallationState) -> list[dict[str, Any]]:
+    """Flat per-file rows for the CLAUDE.md listing.
+
+    Includes the global ``CLAUDE.md`` / ``CLAUDE.local.md`` plus every
+    per-project CLAUDE.md pair. Missing files are reported as rows with
+    ``tokens=None`` and a ``status`` string so users can distinguish
+    "file not present" from "project path missing on disk".
+    """
+    counter = TiktokenCounter()
+    rows: list[dict[str, Any]] = []
+    gs = state.global_scope
+
+    rows.append(
+        {
+            "scope": "global",
+            "name": "CLAUDE.md",
+            "path": str(gs.claude_home / "CLAUDE.md"),
+            "tokens": counter.count(gs.claude_md_text) if gs.claude_md_text else None,
+            "bytes": gs.claude_md_bytes,
+            "status": "present" if gs.claude_md_text else "absent",
+        }
+    )
+    rows.append(
+        {
+            "scope": "global",
+            "name": "CLAUDE.local.md",
+            "path": str(gs.claude_home / "CLAUDE.local.md"),
+            "tokens": (
+                counter.count(gs.claude_local_md_text) if gs.claude_local_md_text else None
+            ),
+            "bytes": gs.claude_local_md_bytes,
+            "status": "present" if gs.claude_local_md_text else "absent",
+        }
+    )
+
+    for project in state.project_scopes:
+        if not project.exists:
+            rows.append(
+                {
+                    "scope": "project",
+                    "name": project.name,
+                    "path": str(project.claude_md_path),
+                    "tokens": None,
+                    "bytes": 0,
+                    "status": "path_missing",
+                }
+            )
+            continue
+        rows.append(
+            {
+                "scope": "project",
+                "name": project.name,
+                "path": str(project.claude_md_path),
+                "tokens": (
+                    counter.count(project.claude_md_text) if project.claude_md_text else None
+                ),
+                "bytes": project.claude_md_bytes,
+                "status": "present" if project.claude_md_text else "absent",
+            }
+        )
+        if project.claude_local_md_text:
+            rows.append(
+                {
+                    "scope": "project",
+                    "name": f"{project.name} (CLAUDE.local.md)",
+                    "path": str(project.claude_local_md_path),
+                    "tokens": counter.count(project.claude_local_md_text),
+                    "bytes": project.claude_local_md_bytes,
+                    "status": "present",
+                }
+            )
+    return rows
+
+
+def _claude_md_totals(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Aggregate counts for the listing footer."""
+    present = [r for r in rows if r["status"] == "present"]
+    return {
+        "files_present": len(present),
+        "tokens_total": sum(r["tokens"] or 0 for r in present),
+        "projects_scanned": sum(1 for r in rows if r["scope"] == "project"),
+        "projects_missing": sum(1 for r in rows if r["status"] == "path_missing"),
+    }
+
+
+def render_claude_md_listing_plain(state: InstallationState) -> str:
+    """Plain-text listing of every CLAUDE.md file unclog sees.
+
+    Diagnostic output for ``--list-claude-md`` — confirms the scan is
+    actually finding every CLAUDE.md before the user starts tuning
+    thresholds or chasing missing-finding bugs.
+    """
+    rows = _claude_md_rows(state)
+    totals = _claude_md_totals(rows)
+    lines: list[str] = []
+    lines.append("CLAUDE.md files found:")
+    lines.append("")
+    lines.append("global CLAUDE.md:")
+    for r in rows:
+        if r["scope"] != "global":
+            continue
+        tokens = "—" if r["tokens"] is None else f"{r['tokens']:>8,} tok"
+        status = "" if r["status"] == "present" else f"  ({r['status']})"
+        lines.append(f"  {tokens}  {r['name']}{status}  {r['path']}")
+    lines.append("")
+    lines.append("project CLAUDE.md:")
+    project_rows = [r for r in rows if r["scope"] == "project"]
+    if not project_rows:
+        lines.append("  (no projects scanned)")
+    else:
+        for r in project_rows:
+            tokens = "—" if r["tokens"] is None else f"{r['tokens']:>8,} tok"
+            if r["status"] == "path_missing":
+                note = "  (path missing on disk)"
+            elif r["status"] == "absent":
+                note = "  (no CLAUDE.md)"
+            else:
+                note = ""
+            lines.append(f"  {tokens}  {r['name']}{note}  {r['path']}")
+    lines.append("")
+    lines.append(
+        f"totals: {totals['files_present']} file(s) present  ·  "
+        f"{totals['tokens_total']:,} tokens total  ·  "
+        f"{totals['projects_scanned']} project(s) scanned"
+        + (f"  ·  {totals['projects_missing']} missing" if totals["projects_missing"] else "")
+    )
+    return "\n".join(lines) + "\n"
+
+
+def render_claude_md_listing_rich(state: InstallationState, console: Console) -> None:
+    """Rich TTY rendering of the CLAUDE.md listing.
+
+    Uses the same per-category colouring as the inventory chips so the
+    diagnostic output reads as part of the same product surface.
+    """
+    rows = _claude_md_rows(state)
+    totals = _claude_md_totals(rows)
+    console.print(Text("CLAUDE.md files found:", style=f"bold {ACCENT}"))
+    console.print("")
+    console.print(Text("global CLAUDE.md", style=DIM))
+    for r in rows:
+        if r["scope"] != "global":
+            continue
+        _print_claude_md_row(console, r)
+    console.print("")
+    project_rows = [r for r in rows if r["scope"] == "project"]
+    console.print(Text(f"project CLAUDE.md ({len(project_rows)})", style=DIM))
+    if not project_rows:
+        console.print("  [dim](no projects scanned)[/dim]")
+    else:
+        for r in project_rows:
+            _print_claude_md_row(console, r)
+    console.print("")
+    footer = Text()
+    footer.append(f"{totals['files_present']} file(s) present", style=f"bold {ACCENT}")
+    footer.append("  ·  ", style=DIM)
+    footer.append(f"{totals['tokens_total']:,} tokens total", style=f"bold {ACCENT}")
+    footer.append("  ·  ", style=DIM)
+    footer.append(f"{totals['projects_scanned']} project(s) scanned", style=DIM)
+    if totals["projects_missing"]:
+        footer.append("  ·  ", style=DIM)
+        footer.append(f"{totals['projects_missing']} missing", style="#eab308")
+    console.print(footer)
+
+
+def _print_claude_md_row(console: Console, row: dict[str, Any]) -> None:
+    line = Text("  ")
+    if row["tokens"] is None:
+        line.append(f"{'—':>8}    ", style=DIM)
+    else:
+        line.append(f"{row['tokens']:>8,} tok", style=f"bold {ACCENT}")
+    line.append("  ")
+    line.append(row["name"])
+    if row["status"] == "path_missing":
+        line.append("  (path missing)", style="#eab308")
+    elif row["status"] == "absent":
+        line.append("  (no CLAUDE.md)", style=DIM)
+    line.append("  ")
+    line.append(row["path"], style=DIM)
+    console.print(line)
 
 
 def baseline_tokens(state: InstallationState) -> int:

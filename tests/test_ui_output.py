@@ -13,7 +13,13 @@ from unclog.scan.filesystem import Agent, Skill
 from unclog.scan.session import SessionSystemBlock
 from unclog.scan.stats import ActivityIndex
 from unclog.state import GlobalScope, InstallationState
-from unclog.ui.output import SCHEMA_ID, build_report, render_json, render_plain
+from unclog.ui.output import (
+    SCHEMA_ID,
+    build_report,
+    render_claude_md_listing_plain,
+    render_json,
+    render_plain,
+)
 from unclog.util.paths import claude_home
 
 runner = CliRunner()
@@ -318,3 +324,74 @@ def test_render_plain_lists_findings_with_selection_markers() -> None:
     assert "[ ]" in out
     assert "dead_mcp" not in out  # detector emits a human title, not the type string
     assert "notion" in out
+
+
+def test_projects_audited_includes_claude_md_token_counts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from unclog.app import run_scan
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text("# project rules\n" + ("body\n" * 20), encoding="utf-8")
+    state = run_scan(project=project, cwd=tmp_path)
+    report = build_report(state)
+    audited = report["projects_audited"][0]
+    assert audited["claude_md_tokens"] > 0
+    assert audited["claude_local_md_tokens"] == 0
+
+
+def test_list_claude_md_plain_shows_global_and_projects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from unclog.app import run_scan
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    (claude_home / "CLAUDE.md").write_text("# global\n" + ("rule\n" * 10), encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "CLAUDE.md").write_text("# project\nhello\n", encoding="utf-8")
+    state = run_scan(project=project, cwd=tmp_path)
+    out = render_claude_md_listing_plain(state)
+    assert "CLAUDE.md files found" in out
+    assert "global CLAUDE.md" in out
+    assert "proj" in out
+    assert "project CLAUDE.md" in out
+    assert "totals:" in out
+
+
+def test_list_claude_md_flags_missing_project(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from unclog.app import run_scan
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_home))
+
+    # Seed ~/.claude.json with a stale project path.
+    import json as _json
+
+    gone = tmp_path / "gone"
+    (claude_home / ".claude.json").write_text(
+        _json.dumps({"projects": {str(gone): {}}}),
+        encoding="utf-8",
+    )
+    state = run_scan(cwd=tmp_path)
+    out = render_claude_md_listing_plain(state)
+    assert "path missing on disk" in out
+
+
+def test_cli_list_claude_md_exits_after_listing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / ".claude"))
+    result = runner.invoke(app, ["--list-claude-md", "--plain"])
+    assert result.exit_code == 0
+    assert "CLAUDE.md files found" in result.stdout
+    # The listing short-circuits before the normal scan summary.
+    assert "baseline:" not in result.stdout

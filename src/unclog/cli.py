@@ -12,7 +12,14 @@ from unclog.apply.snapshot import SnapshotError, list_snapshots, load_snapshot
 from unclog.state import InstallationState
 from unclog.ui.display import DisplayOptions
 from unclog.ui.interactive import InteractiveOptions, run_interactive
-from unclog.ui.output import baseline_tokens, render_json, render_plain, render_rich
+from unclog.ui.output import (
+    baseline_tokens,
+    render_claude_md_listing_plain,
+    render_claude_md_listing_rich,
+    render_json,
+    render_plain,
+    render_rich,
+)
 from unclog.util.paths import claude_paths
 
 app = typer.Typer(
@@ -79,6 +86,14 @@ def root(
         "--no-animation",
         help="Disable motion (post-apply countdown); keeps colour.",
     ),
+    list_claude_md: bool = typer.Option(
+        False,
+        "--list-claude-md",
+        help=(
+            "Print every CLAUDE.md file unclog can see (global + per-project) "
+            "with token counts, then exit. Diagnostic for verifying scan coverage."
+        ),
+    ),
 ) -> None:
     """Scan the current Claude Code installation and print a report.
 
@@ -105,6 +120,13 @@ def root(
     console = Console(no_color=not display.colour)
 
     state = run_scan(project=project)
+
+    if list_claude_md:
+        if display.plain:
+            typer.echo(render_claude_md_listing_plain(state), nl=False)
+        else:
+            render_claude_md_listing_rich(state, console)
+        return
 
     if as_json:
         typer.echo(render_json(state))
