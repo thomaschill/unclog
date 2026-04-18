@@ -274,18 +274,15 @@ def test_missing_claudeignore_flags_project_with_node_modules(tmp_path: Path) ->
     project_dir = tmp_path / "draper"
     project_dir.mkdir()
     (project_dir / "node_modules").mkdir()
-    config = ClaudeConfig(
-        projects=MappingProxyType(
-            {
-                project_dir.resolve(): _project_record(project_dir.resolve()),
-            }
-        )
+    resolved = project_dir.resolve()
+    state = _state(
+        activity=_active_index(),
+        project_scopes=(_project_scope(resolved),),
     )
-    state = _state(config=config, activity=_active_index())
     findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     miss = [f for f in findings if f.type == "missing_claudeignore"]
     assert len(miss) == 1
-    assert miss[0].scope.project_path == project_dir.resolve()
+    assert miss[0].scope.project_path == resolved
     assert miss[0].action.primitive == "flag_only"
 
 
@@ -294,24 +291,53 @@ def test_missing_claudeignore_skipped_when_ignore_present(tmp_path: Path) -> Non
     project_dir.mkdir()
     (project_dir / "node_modules").mkdir()
     (project_dir / ".claudeignore").write_text("node_modules\n", encoding="utf-8")
-    config = ClaudeConfig(
-        projects=MappingProxyType(
-            {project_dir.resolve(): _project_record(project_dir.resolve())}
-        )
+    resolved = project_dir.resolve()
+    state = _state(
+        activity=_active_index(),
+        project_scopes=(_project_scope(resolved, has_claudeignore=True),),
     )
-    state = _state(config=config, activity=_active_index())
     findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "missing_claudeignore"] == []
 
 
 def test_missing_claudeignore_ignores_stale_project_paths(tmp_path: Path) -> None:
     nowhere = tmp_path / "gone"  # directory does not exist
-    config = ClaudeConfig(
-        projects=MappingProxyType({nowhere: _project_record(nowhere)})
+    state = _state(
+        activity=_active_index(),
+        project_scopes=(_project_scope(nowhere, exists=False),),
     )
-    state = _state(config=config, activity=_active_index())
     findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "missing_claudeignore"] == []
+
+
+def test_missing_claudeignore_respects_project_narrowing(tmp_path: Path) -> None:
+    """`--project PATH` narrows state.project_scopes to a single entry; the
+    detector must follow that narrowing rather than re-expand via
+    ~/.claude.json. Regression: B1 in the pre-ship audit."""
+    narrowed = tmp_path / "narrowed"
+    narrowed.mkdir()
+    (narrowed / "node_modules").mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "node_modules").mkdir()
+    # config.projects has BOTH, but project_scopes only has the narrowed one.
+    config = ClaudeConfig(
+        projects=MappingProxyType(
+            {
+                narrowed.resolve(): _project_record(narrowed.resolve()),
+                other.resolve(): _project_record(other.resolve()),
+            }
+        )
+    )
+    state = _state(
+        config=config,
+        activity=_active_index(),
+        project_scopes=(_project_scope(narrowed.resolve()),),
+    )
+    findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
+    miss = [f for f in findings if f.type == "missing_claudeignore"]
+    assert len(miss) == 1
+    assert miss[0].scope.project_path == narrowed.resolve()
 
 
 def _project_record(path: Path):  # type: ignore[no-untyped-def]
@@ -335,20 +361,26 @@ def _hook(event: str, command: str, *, scope: str = "global", matcher: str | Non
     )
 
 
-def _project_scope(path: Path, *, hooks: tuple = ()):  # type: ignore[no-untyped-def]
+def _project_scope(  # type: ignore[no-untyped-def]
+    path: Path,
+    *,
+    hooks: tuple = (),
+    exists: bool = True,
+    has_claudeignore: bool = False,
+):
     from unclog.scan.project import ProjectScope
 
     return ProjectScope(
         path=path,
         name=path.name,
-        exists=True,
+        exists=exists,
         claude_md_path=path / "CLAUDE.md",
         claude_md_text="",
         claude_md_bytes=0,
         claude_local_md_path=path / "CLAUDE.local.md",
         claude_local_md_text="",
         claude_local_md_bytes=0,
-        has_claudeignore=False,
+        has_claudeignore=has_claudeignore,
         hooks=hooks,
     )
 

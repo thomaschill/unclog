@@ -204,8 +204,16 @@ def _scan_projects(
     stale_count = 0
     for target in targets:
         scoped = scan_project(target, memory_file=paths.project_memory_file(target))
-        if not scoped.exists and not narrowed:
-            stale_count += 1
+        if not scoped.exists:
+            if narrowed:
+                # Explicit --project PATH with a missing directory is almost
+                # always a typo. Surface it loudly rather than scanning an
+                # empty scope and calling it "clean".
+                warnings.append(
+                    f"--project path does not exist on disk: {scoped.path}"
+                )
+            else:
+                stale_count += 1
         scopes.append(scoped)
     if stale_count:
         warnings.append(

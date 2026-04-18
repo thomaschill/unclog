@@ -104,9 +104,8 @@ def root(
 
     The default mode prints the report, then (if findings exist and
     stdout is a TTY) walks through the interactive fix selector.
-    ``--report``, ``--json``, and ``--plain`` all suppress the fix
-    flow. ``--yes`` skips prompts and applies auto-checked findings
-    only.
+    --report, --json, and --plain all suppress the fix flow. --yes
+    skips prompts and applies auto-checked findings only.
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -200,11 +199,11 @@ def restore(
         help="List every snapshot without restoring.",
     ),
 ) -> None:
-    """Restore a previous ``unclog`` snapshot.
+    """Restore a previous unclog snapshot.
 
-    With no arguments, ``unclog restore`` restores the most recent
-    snapshot. ``unclog restore <id>`` targets a specific one.
-    ``unclog restore --list`` enumerates every snapshot on disk.
+    With no arguments, 'unclog restore' restores the most recent
+    snapshot. 'unclog restore <id>' targets a specific one.
+    'unclog restore --list' enumerates every snapshot on disk.
     """
     paths = claude_paths()
     console = Console()
