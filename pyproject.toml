@@ -1,6 +1,6 @@
 [project]
 name = "unclog"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Audit your Claude Code installation and clear context-window bloat. Local-only."
 readme = "README.md"
 license = { file = "LICENSE" }
