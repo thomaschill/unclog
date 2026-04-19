@@ -38,6 +38,36 @@ class ApplyError(RuntimeError):
     """Raised when a primitive cannot complete its action."""
 
 
+def _load_json_config(path: Path, finding_id: str) -> Any:
+    """Read + json-decode a config file, converting every fail mode to ApplyError.
+
+    The three JSON primitives all need to read ``.claude.json`` /
+    ``settings.json`` / ``installed_plugins.json`` after snapshot
+    capture. A malformed or unreadable config is not a primitive bug —
+    it's a user-data condition — so it needs to become ``ApplyError``
+    rather than escape as ``JSONDecodeError`` (a ``ValueError``) and
+    take down the whole batch.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ApplyError(f"could not read {path} (finding {finding_id}): {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ApplyError(f"{path} is not valid UTF-8 (finding {finding_id}): {exc}") from exc
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ApplyError(f"{path} is not valid JSON (finding {finding_id}): {exc}") from exc
+
+
+def _write_json_config(path: Path, data: Any, finding_id: str) -> None:
+    """Write JSON back to a config file, converting OSError to ApplyError."""
+    try:
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise ApplyError(f"could not write {path} (finding {finding_id}): {exc}") from exc
+
+
 def apply_action(
     finding: Finding,
     snapshot: Snapshot,
@@ -138,7 +168,7 @@ def _primitive_comment_out_mcp(
         action="comment_out_mcp",
         details={**action_snapshot_hint(action), "server_name": name},
     )
-    data = json.loads(config_path.read_text(encoding="utf-8"))
+    data = _load_json_config(config_path, finding.id)
     if not isinstance(data, dict):
         raise ApplyError(f".claude.json root is not an object: {config_path}")
     servers = data.get("mcpServers")
@@ -153,7 +183,7 @@ def _primitive_comment_out_mcp(
         else:
             new_servers[key] = value
     data["mcpServers"] = new_servers
-    config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _write_json_config(config_path, data, finding.id)
     return record
 
 
@@ -205,7 +235,7 @@ def _primitive_disable_plugin(
             "prior_value": prior,
         },
     )
-    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data = _load_json_config(settings_path, finding.id)
     if not isinstance(data, dict):
         raise ApplyError(f"settings.json root is not an object: {settings_path}")
     plugins = data.get("enabledPlugins")
@@ -213,7 +243,7 @@ def _primitive_disable_plugin(
         plugins = {}
     plugins[plugin_key] = False
     data["enabledPlugins"] = plugins
-    settings_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _write_json_config(settings_path, data, finding.id)
     return record
 
 
@@ -252,7 +282,7 @@ def _primitive_uninstall_plugin(
         action="uninstall_plugin",
         details={**action_snapshot_hint(action), "plugin_key": plugin_key},
     )
-    data: Any = json.loads(installed_path.read_text(encoding="utf-8"))
+    data: Any = _load_json_config(installed_path, finding.id)
     name = plugin_key.split("@", 1)[0] if "@" in plugin_key else plugin_key
     if isinstance(data, dict):
         plugins_field = data.get("plugins")
@@ -266,7 +296,7 @@ def _primitive_uninstall_plugin(
             data.pop(name, None)
     elif isinstance(data, list):
         data = [p for p in data if not (isinstance(p, dict) and p.get("name") == name)]
-    installed_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _write_json_config(installed_path, data, finding.id)
 
     cache_dir = claude_home / "plugins" / "cache" / name
     if cache_dir.is_dir():

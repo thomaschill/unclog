@@ -138,6 +138,39 @@ def test_comment_out_mcp_renames_server_key(tmp_path: Path) -> None:
     assert data["mcpServers"]["__unclog_disabled__notion"]["command"] == "nt"
 
 
+def test_comment_out_mcp_raises_apply_error_on_malformed_json(tmp_path: Path) -> None:
+    """Regression: json.JSONDecodeError used to escape and kill the batch."""
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    config_path = claude_home / ".claude.json"
+    config_path.write_text("{not valid json,,}", encoding="utf-8")
+    snap = _snapshot(tmp_path, claude_home)
+    finding = _finding(
+        fid="unused_mcp:x",
+        type_="unused_mcp",
+        primitive="comment_out_mcp",
+        server_name="x",
+    )
+    with pytest.raises(ApplyError, match="not valid JSON"):
+        apply_action(finding, snap, claude_home=claude_home)
+
+
+def test_disable_plugin_raises_apply_error_on_malformed_json(tmp_path: Path) -> None:
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    settings = claude_home / "settings.json"
+    settings.write_text("{not valid json", encoding="utf-8")
+    snap = _snapshot(tmp_path, claude_home)
+    finding = _finding(
+        fid="stale_plugin:foo",
+        type_="stale_plugin",
+        primitive="disable_plugin",
+        plugin_key="foo",
+    )
+    with pytest.raises(ApplyError, match="not valid JSON"):
+        apply_action(finding, snap, claude_home=claude_home)
+
+
 # -- disable_plugin / uninstall_plugin -------------------------------------
 
 

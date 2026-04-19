@@ -231,3 +231,38 @@ def test_apply_findings_survives_one_bad_primitive(tmp_path: Path) -> None:
     # ``unclog restore`` must be able to find the snapshot.
     reloaded = load_snapshot(snapshots_dir, "latest")
     assert reloaded.id == result.snapshot.id
+
+
+def test_apply_findings_survives_malformed_json_config(tmp_path: Path) -> None:
+    """Regression: json.JSONDecodeError escaped the runner and killed the batch."""
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    # Malformed .claude.json will make comment_out_mcp fail.
+    (claude_home / ".claude.json").write_text("{broken", encoding="utf-8")
+    # Good item that should still succeed after the bad one fails.
+    good_md = claude_home / "CLAUDE.md"
+    good_md.write_text("# Drop\nbody\n", encoding="utf-8")
+    findings = [
+        _finding(
+            fid="unused_mcp:x",
+            primitive="comment_out_mcp",
+            server_name="notion",
+            type_="unused_mcp",
+        ),
+        _finding(
+            fid="claude_md_oversized:1",
+            primitive="remove_claude_md_section",
+            path=good_md,
+            heading="Drop",
+            type_="claude_md_oversized",
+        ),
+    ]
+    snapshots_dir = claude_home / ".unclog" / "snapshots"
+    result = apply_findings(
+        findings, claude_home=claude_home, snapshots_dir=snapshots_dir, now=NOW
+    )
+    assert len(result.failed) == 1
+    assert len(result.succeeded) == 1
+    assert result.persist_error is None
+    assert result.snapshot.manifest_path.is_file()
+    assert "Drop" not in good_md.read_text(encoding="utf-8")

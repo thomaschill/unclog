@@ -427,3 +427,39 @@ def test_heavy_hook_emits_nothing_when_only_tool_events_registered() -> None:
     state = _state(settings=settings)
     findings = detect(state, state.global_scope.activity, Thresholds(), now=NOW)
     assert [f for f in findings if f.type == "heavy_hook"] == []
+
+
+# --- detector isolation --------------------------------------------------
+
+
+def test_detect_isolates_a_single_broken_detector(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Regression: one broken detector used to crash the whole audit.
+
+    The user had a detector raise an unexpected exception on real data
+    and the entire scan aborted. ``detect()`` now runs each detector in
+    its own ``try``/``except`` and threads the failure out via
+    ``warnings`` so the user sees a one-line notice instead of a trace.
+    """
+    from unclog.findings.detectors import dead_mcp, heavy_hook
+
+    def _broken(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("simulated detector bug")
+
+    monkeypatch.setattr(dead_mcp, "detect", _broken)
+
+    settings = Settings(hooks=(_hook("UserPromptSubmit", "ctx.sh"),))
+    state = _state(settings=settings)
+    warnings: list[str] = []
+
+    findings = detect(
+        state, state.global_scope.activity, Thresholds(), now=NOW, warnings=warnings
+    )
+
+    # heavy_hook still produced its finding even though dead_mcp blew up.
+    assert [f.type for f in findings if f.type == "heavy_hook"]
+    assert any("dead_mcp" in w and "simulated detector bug" in w for w in warnings)
+    # Sanity: other detectors weren't swept up by the failure.
+    assert len(warnings) == 1
+
+    # Double-check the imported-but-untouched heavy_hook module is the one we used.
+    assert hasattr(heavy_hook, "detect")

@@ -121,32 +121,79 @@ def root(
 
     console = Console(no_color=not display.colour)
 
-    state = run_scan(project=project, probe_mcps=not no_probe_mcps)
+    try:
+        state = run_scan(project=project, probe_mcps=not no_probe_mcps)
 
-    if list_claude_md:
+        if list_claude_md:
+            if display.plain:
+                typer.echo(render_claude_md_listing_plain(state), nl=False)
+            else:
+                render_claude_md_listing_rich(state, console)
+            return
+
+        if as_json:
+            typer.echo(render_json(state))
+            return
+
         if display.plain:
-            typer.echo(render_claude_md_listing_plain(state), nl=False)
+            typer.echo(render_plain(state), nl=False)
         else:
-            render_claude_md_listing_rich(state, console)
-        return
+            render_rich(state, console, show_wordmark=display.show_wordmark)
 
-    if as_json:
-        typer.echo(render_json(state))
-        return
+        if report_only or as_json or display.plain:
+            return
 
-    if display.plain:
-        typer.echo(render_plain(state), nl=False)
-    else:
-        render_rich(state, console, show_wordmark=display.show_wordmark)
+        _launch_interactive(
+            state,
+            console=console,
+            yes=yes,
+            no_animation=no_animation,
+        )
+    except (typer.Exit, typer.Abort, typer.BadParameter, KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
+        _handle_unexpected_error(console, exc)
+        raise typer.Exit(code=1) from exc
 
-    if report_only or as_json or display.plain:
-        return
 
-    _launch_interactive(
-        state,
-        console=console,
-        yes=yes,
-        no_animation=no_animation,
+def _handle_unexpected_error(console: Console, exc: BaseException) -> None:
+    """Render an unexpected crash as a clean user-facing error.
+
+    The trace is still written to ``~/.claude/.unclog/last-error.log``
+    so the user can share it in a bug report without needing to
+    reproduce. Any existing apply snapshot is discoverable via
+    ``unclog restore --list``; we point users at that rather than
+    guessing a specific id, because the snapshot (if any) was created
+    inside a nested call and we don't have its id here.
+    """
+    import traceback
+
+    error_log: Path | None = None
+    try:
+        log_path = claude_paths().unclog_dir / "last-error.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)),
+            encoding="utf-8",
+        )
+        error_log = log_path
+    except OSError:
+        # If we can't even write the log, don't compound the problem.
+        pass
+
+    console.print()
+    console.print(
+        f"[#ef4444]unclog hit an unexpected error:[/#ef4444] "
+        f"[bold]{type(exc).__name__}[/bold]: {exc}"
+    )
+    if error_log is not None:
+        console.print(f"[dim]Full trace: {error_log}[/dim]")
+    console.print(
+        "[dim]If an apply was in progress, run [bold]unclog restore --list[/bold] "
+        "to see recoverable snapshots.[/dim]"
+    )
+    console.print(
+        "[dim]Please report this at https://github.com/thomaschill/unclog/issues[/dim]"
     )
 
 
@@ -163,12 +210,16 @@ def _launch_interactive(
 
     paths = claude_paths()
     thresholds = load_thresholds(paths.config_toml)
+    detector_warnings: list[str] = []
     findings = detect(
         state,
         state.global_scope.activity,
         thresholds,
         now=state.generated_at,
+        warnings=detector_warnings,
     )
+    for warning in detector_warnings:
+        console.print(f"[yellow]![/yellow] {warning}")
     curate_findings = build_curate_findings(state)
     if not findings and not curate_findings:
         return
@@ -207,28 +258,34 @@ def restore(
     """
     paths = claude_paths()
     console = Console()
-    if list_only:
-        _render_snapshot_list(paths.snapshots_dir, console)
-        return
-
     try:
-        snapshot = load_snapshot(paths.snapshots_dir, snapshot_id)
-    except SnapshotError as exc:
-        console.print(f"[#ef4444]{exc}[/#ef4444]")
-        raise typer.Exit(code=1) from exc
+        if list_only:
+            _render_snapshot_list(paths.snapshots_dir, console)
+            return
 
-    result = restore_snapshot(snapshot)
-    console.print(
-        f"[#22c55e]\u2713[/#22c55e] Restored snapshot [bold]{snapshot.id}[/bold] "
-        f"({len(result.restored)} action(s))"
-    )
-    if result.failed:
+        try:
+            snapshot = load_snapshot(paths.snapshots_dir, snapshot_id)
+        except SnapshotError as exc:
+            console.print(f"[#ef4444]{exc}[/#ef4444]")
+            raise typer.Exit(code=1) from exc
+
+        result = restore_snapshot(snapshot)
         console.print(
-            f"[#ef4444]! {len(result.failed)} action(s) could not be restored:[/#ef4444]"
+            f"[#22c55e]\u2713[/#22c55e] Restored snapshot [bold]{snapshot.id}[/bold] "
+            f"({len(result.restored)} action(s))"
         )
-        for action, reason in result.failed:
-            console.print(f"  [dim]- {action.original_path}: {reason}[/dim]")
-        raise typer.Exit(code=1)
+        if result.failed:
+            console.print(
+                f"[#ef4444]! {len(result.failed)} action(s) could not be restored:[/#ef4444]"
+            )
+            for action, reason in result.failed:
+                console.print(f"  [dim]- {action.original_path}: {reason}[/dim]")
+            raise typer.Exit(code=1)
+    except (typer.Exit, typer.Abort, typer.BadParameter, KeyboardInterrupt, SystemExit):
+        raise
+    except Exception as exc:
+        _handle_unexpected_error(console, exc)
+        raise typer.Exit(code=1) from exc
 
 
 def _render_snapshot_list(snapshots_dir: Path, console: Console) -> None:

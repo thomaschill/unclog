@@ -16,6 +16,7 @@ Public surface:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from unclog.findings.base import Action, Finding, Scope
@@ -54,6 +55,7 @@ def detect(
     thresholds: Thresholds,
     *,
     now: datetime | None = None,
+    warnings: list[str] | None = None,
 ) -> list[Finding]:
     """Run every v0.1 detector and return their findings concatenated.
 
@@ -61,6 +63,12 @@ def detect(
     descending within type; the final list preserves the order detectors
     are invoked in (largest-impact categories first: MCPs, plugins,
     CLAUDE.md issues, residue flags).
+
+    Each detector runs inside its own ``try``/``except`` — a bug in one
+    detector skips *that* category and reports it via ``warnings`` (when
+    provided), rather than silently returning an empty finding list and
+    dumping a traceback to stderr. This is the "never crash the whole
+    audit because one detector hit a malformed input" guarantee.
 
     v0.1 intentionally does not flag unused agents/commands/skills:
     we cannot reliably distinguish "never used" from "not used lately"
@@ -70,31 +78,70 @@ def detect(
     lets the user decide.
     """
     reference = now if now is not None else datetime.now(tz=UTC)
-    context = build_context(state)
+    try:
+        context = build_context(state)
+    except Exception as exc:
+        # build_context failure disables every CLAUDE.md-based detector
+        # but the MCP / plugin / hook ones can still run — so we don't
+        # abort here.
+        if warnings is not None:
+            warnings.append(f"could not parse CLAUDE.md files: {exc}")
+        context = None
+
     findings: list[Finding] = []
-    findings.extend(dead_mcp.detect(state, activity, thresholds, now=reference))
-    findings.extend(unused_mcp.detect(state, activity, thresholds, now=reference))
-    findings.extend(failed_mcp_probe.detect(state, activity, thresholds, now=reference))
-    findings.extend(stale_plugin.detect(state, activity, thresholds, now=reference))
-    findings.extend(
-        claude_md_duplicate.detect(
-            state, activity, thresholds, now=reference, context=context
+
+    def _run(name: str, fn: Callable[[], list[Finding]]) -> None:
+        try:
+            findings.extend(fn())
+        except Exception as exc:
+            if warnings is not None:
+                warnings.append(f"{name} detector skipped: {exc}")
+
+    _run("dead_mcp", lambda: dead_mcp.detect(state, activity, thresholds, now=reference))
+    _run("unused_mcp", lambda: unused_mcp.detect(state, activity, thresholds, now=reference))
+    _run(
+        "failed_mcp_probe",
+        lambda: failed_mcp_probe.detect(state, activity, thresholds, now=reference),
+    )
+    _run(
+        "stale_plugin",
+        lambda: stale_plugin.detect(state, activity, thresholds, now=reference),
+    )
+    if context is not None:
+        _run(
+            "claude_md_duplicate",
+            lambda: claude_md_duplicate.detect(
+                state, activity, thresholds, now=reference, context=context
+            ),
         )
-    )
-    findings.extend(
-        scope_mismatch.detect(state, activity, thresholds, now=reference, context=context)
-    )
-    findings.extend(
-        claude_md_oversized.detect(
-            state, activity, thresholds, now=reference, context=context
+        _run(
+            "scope_mismatch",
+            lambda: scope_mismatch.detect(
+                state, activity, thresholds, now=reference, context=context
+            ),
         )
-    )
-    findings.extend(
-        claude_md_dead_ref.detect(
-            state, activity, thresholds, now=reference, context=context
+        _run(
+            "claude_md_oversized",
+            lambda: claude_md_oversized.detect(
+                state, activity, thresholds, now=reference, context=context
+            ),
         )
+        _run(
+            "claude_md_dead_ref",
+            lambda: claude_md_dead_ref.detect(
+                state, activity, thresholds, now=reference, context=context
+            ),
+        )
+    _run(
+        "disabled_plugin_residue",
+        lambda: disabled_plugin_residue.detect(state, activity, thresholds, now=reference),
     )
-    findings.extend(disabled_plugin_residue.detect(state, activity, thresholds, now=reference))
-    findings.extend(missing_claudeignore.detect(state, activity, thresholds, now=reference))
-    findings.extend(heavy_hook.detect(state, activity, thresholds, now=reference))
+    _run(
+        "missing_claudeignore",
+        lambda: missing_claudeignore.detect(state, activity, thresholds, now=reference),
+    )
+    _run(
+        "heavy_hook",
+        lambda: heavy_hook.detect(state, activity, thresholds, now=reference),
+    )
     return findings
