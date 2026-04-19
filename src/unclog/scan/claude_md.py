@@ -4,13 +4,10 @@ This is the input layer for the ``claude_md_*`` detectors (spec §7):
 
 - Section parsing turns the raw markdown into a list of
   :class:`MeasuredSection` records — each section's body carries a
-  tiktoken count so ``claude_md_oversized`` and the duplicate/scope
-  detectors can reason about real token cost, not bytes.
-- Dead-ref extraction scans every non-code line for path-shaped strings,
-  resolves them against the CLAUDE.md's own directory, and stats them.
-  Dead refs on lines that contain *only* the ref become candidates for
-  ``remove_claude_md_lines`` (auto-check safe); dead refs mixed with
-  prose are surfaced as manual-edit flags via ``open_in_editor``.
+  tiktoken count so the duplicate/scope detectors can reason about
+  real token cost, not bytes.
+- Dead-ref extraction remains in the data model for future use, but
+  no detector currently surfaces dead refs as findings.
 
 Conservative path extraction is the whole ball game here. A false
 positive (flagging "foo/bar" in prose as a file path) would erode trust

@@ -8,9 +8,9 @@ Every action recorded in a manifest is reversed by:
   the apply primitive produced a file that didn't exist at capture
   time (rare; happens for ``move_claude_md_section`` destinations).
 
-``open_in_editor`` and ``flag_only`` actions have empty ``snapshot_path``
-entries and are skipped — there are no bytes to restore. The user still
-sees them in the summary so they know what was logged.
+``flag_only`` actions have empty ``snapshot_path`` entries and are
+skipped — there are no bytes to restore. The user still sees them in
+the summary so they know what was logged.
 
 Partial restores are tolerated. If one action fails, the remaining
 actions still run; the result object lists every failure so the CLI
@@ -114,7 +114,7 @@ def _source_allowed(snapshot: Snapshot, source: Path) -> bool:
 
 def _restore_one(snapshot: Snapshot, action: SnapshotAction) -> None:
     if not action.snapshot_path:
-        # Informational actions (open_in_editor, flag_only) have no bytes.
+        # Informational actions (flag_only) have no bytes to restore.
         return
     source = snapshot.files_root / action.snapshot_path
     destination = Path(action.original_path)

@@ -451,9 +451,6 @@ def _manual_hint_for(finding: Finding) -> str:
                 f"leave in place; unclog will offer removal once "
                 f"{key!r} is long-disabled"
             )
-        case "claude_md_dead_ref":
-            target = str(path) if path else "the referenced CLAUDE.md"
-            return f"review and rewrite surrounding prose in {target}"
         case "failed_mcp_probe":
             server = finding.action.server_name or "the server"
             return (

@@ -22,9 +22,7 @@ from datetime import UTC, datetime
 from unclog.findings.base import Action, Finding, Scope
 from unclog.findings.claude_md_context import build_context
 from unclog.findings.detectors import (
-    claude_md_dead_ref,
     claude_md_duplicate,
-    claude_md_oversized,
     dead_mcp,
     disabled_plugin_residue,
     failed_mcp_probe,
@@ -117,18 +115,6 @@ def detect(
         _run(
             "scope_mismatch",
             lambda: scope_mismatch.detect(
-                state, activity, thresholds, now=reference, context=context
-            ),
-        )
-        _run(
-            "claude_md_oversized",
-            lambda: claude_md_oversized.detect(
-                state, activity, thresholds, now=reference, context=context
-            ),
-        )
-        _run(
-            "claude_md_dead_ref",
-            lambda: claude_md_dead_ref.detect(
                 state, activity, thresholds, now=reference, context=context
             ),
         )

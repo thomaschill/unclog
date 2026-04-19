@@ -22,10 +22,7 @@ guarantees a clean restore either way.
 from __future__ import annotations
 
 import json
-import os
-import shlex
 import shutil
-import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -698,106 +695,8 @@ def _primitive_move_claude_md_section(
 
 
 # ---------------------------------------------------------------------------
-# open_in_editor / flag_only
+# flag_only
 # ---------------------------------------------------------------------------
-
-
-_FORK_RETURN_EDITORS: frozenset[str] = frozenset(
-    {"code", "code-insiders", "cursor", "windsurf", "subl", "mate", "atom"}
-)
-_WAIT_FLAGS: frozenset[str] = frozenset({"--wait", "-w", "-W"})
-# macOS and most Linux distros ship at least one of these. Tried in order
-# when neither $EDITOR nor $VISUAL is set — nano first because it's the
-# friendliest for users who don't already know vim.
-_DEFAULT_EDITOR_FALLBACKS: tuple[str, ...] = ("nano", "vim", "vi")
-
-
-def _resolve_editor_argv() -> tuple[list[str], str]:
-    """Return ``(argv, source_label)`` for the editor to spawn.
-
-    Preference order: ``$EDITOR``, ``$VISUAL``, then the first entry in
-    :data:`_DEFAULT_EDITOR_FALLBACKS` present on ``PATH``. The fallback
-    exists because fresh macOS shells commonly have neither env var set,
-    and failing an apply the user already confirmed feels like a
-    papercut — all three defaults ship with macOS and every mainstream
-    Linux distro by default.
-
-    Raises :class:`ApplyError` only if every option is unavailable
-    (extremely rare: a stripped-down container with no terminal editor).
-    """
-    editor_env = os.environ.get("EDITOR") or os.environ.get("VISUAL")
-    if editor_env:
-        try:
-            argv = shlex.split(editor_env)
-        except ValueError as exc:
-            raise ApplyError(f"$EDITOR is malformed ({editor_env!r}): {exc}") from exc
-        if not argv:
-            raise ApplyError("$EDITOR is empty — set it to an editor command and try again")
-        return argv, editor_env
-    for candidate in _DEFAULT_EDITOR_FALLBACKS:
-        resolved = shutil.which(candidate)
-        if resolved is not None:
-            return [resolved], f"{candidate} (default — $EDITOR unset)"
-    raise ApplyError(
-        "no editor available — set $EDITOR (e.g. 'export EDITOR=nano') "
-        "or install one of: " + ", ".join(_DEFAULT_EDITOR_FALLBACKS)
-    )
-
-
-def _primitive_open_in_editor(
-    finding: Finding, snapshot: Snapshot, claude_home: Path
-) -> SnapshotAction:
-    """Spawn ``$EDITOR`` on the target path. No snapshot of bytes is taken.
-
-    We still record the action in the manifest so ``unclog restore``
-    shows what the user was prompted to do, but no file copy is made
-    — the user may or may not save changes.
-
-    ``$EDITOR`` is parsed with :func:`shlex.split` so compound values
-    like ``code --wait`` work. For GUI editors that fork-and-return
-    by default (``code``, ``subl``, ``mate``, ...), a ``--wait`` flag
-    is inserted if the user hasn't already supplied one, so the user
-    returns to the unclog apply flow only after they actually close
-    the file. When neither ``$EDITOR`` nor ``$VISUAL`` is set, falls
-    back to the first terminal editor found on ``PATH`` (nano, vim, vi).
-    """
-    action = finding.action
-    if action.path is None:
-        raise ApplyError("internal error: open_in_editor action is missing its target path")
-    editor_argv, editor_source = _resolve_editor_argv()
-    editor_bin = Path(editor_argv[0]).name
-    # If the user picked a GUI fork-return editor and didn't pass a wait
-    # flag themselves, add one. Terminal editors (vim, nano, emacs,
-    # hx, micro) block on their own, so we leave their argv alone.
-    if editor_bin in _FORK_RETURN_EDITORS and not any(
-        arg in _WAIT_FLAGS for arg in editor_argv[1:]
-    ):
-        editor_argv.append("--wait")
-    target = str(action.path.expanduser())
-    args = list(editor_argv)
-    if action.line_numbers:
-        # nano, vim, emacs accept +N; VS Code-family uses --goto path:N.
-        first_line = action.line_numbers[0]
-        if editor_bin in {"code", "code-insiders", "cursor", "windsurf"}:
-            args.extend(["--goto", f"{target}:{first_line}"])
-        else:
-            args.extend([f"+{first_line}", target])
-    else:
-        args.append(target)
-    try:
-        subprocess.run(args, check=False)
-    except OSError as exc:
-        raise ApplyError(f"could not spawn editor: {exc}") from exc
-    # Record the intent, but no bytes to snapshot since we don't control the edit.
-    record = SnapshotAction(
-        finding_id=finding.id,
-        action="open_in_editor",
-        original_path=target,
-        snapshot_path="",
-        details={**action_snapshot_hint(action), "editor": editor_source},
-    )
-    snapshot.actions.append(record)
-    return record
 
 
 def _primitive_flag_only(
@@ -824,7 +723,6 @@ _DISPATCH = {
     "remove_claude_md_section": _primitive_remove_claude_md_section,
     "remove_claude_md_lines": _primitive_remove_claude_md_lines,
     "move_claude_md_section": _primitive_move_claude_md_section,
-    "open_in_editor": _primitive_open_in_editor,
     "flag_only": _primitive_flag_only,
 }
 

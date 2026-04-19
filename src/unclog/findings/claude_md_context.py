@@ -1,11 +1,10 @@
 """Shared parse of every CLAUDE.md across scopes.
 
-Four v0.1 detectors (``claude_md_oversized``, ``claude_md_dead_ref``,
-``claude_md_duplicate``, ``scope_mismatch_*``) all need to look at the
-same four-way product: ``CLAUDE.md`` / ``CLAUDE.local.md`` times global
-/ per-project scopes. Building this once and passing a
-:class:`ClaudeMdContext` into each detector avoids re-parsing the same
-file four times in a row.
+The ``claude_md_duplicate`` and ``scope_mismatch_*`` detectors both
+need to look at the same four-way product: ``CLAUDE.md`` /
+``CLAUDE.local.md`` times global / per-project scopes. Building this
+once and passing a :class:`ClaudeMdContext` into each detector avoids
+re-parsing the same file twice in a row.
 """
 
 from __future__ import annotations

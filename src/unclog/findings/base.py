@@ -25,9 +25,7 @@ FindingType = Literal[
     "unmeasured_mcp",
     "stale_plugin",
     "disabled_plugin_residue",
-    "claude_md_dead_ref",
     "claude_md_duplicate",
-    "claude_md_oversized",
     "scope_mismatch_global_to_project",
     "scope_mismatch_project_to_global",
     "missing_claudeignore",
@@ -48,7 +46,6 @@ ActionPrimitive = Literal[
     "remove_claude_md_section",
     "remove_claude_md_lines",
     "move_claude_md_section",
-    "open_in_editor",
     "flag_only",
 ]
 

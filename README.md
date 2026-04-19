@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/unclog.svg)](https://pypi.org/project/unclog/)
 
-**Every MCP, skill, hook, and CLAUDE.md line you've installed is charging you on every turn.** `unclog` scans your Claude Code install, measures the bloat, and offers a reversible fix.
+**Every MCP, skill, hook, and CLAUDE.md line you've installed occupies your context window on every turn.** `unclog` scans your Claude Code install, measures the bloat, and offers a reversible fix.
 
 ```
 # install
@@ -22,7 +22,7 @@ unclog
 
 | Category | What unclog surfaces |
 |---|---|
-| **CLAUDE.md** | oversized sections, cross-project duplicates, scope mismatches, dead file refs, broken `@`-import chains (depth ≤5) |
+| **CLAUDE.md** | cross-project duplicates, scope mismatches |
 | **Auto-memory** | per-project `MEMORY.md` files auto-injected into every turn |
 | **Hooks** | every-turn handlers whose stdout silently joins your context |
 | **MCP servers** | configured-but-dead, loaded-but-never-called, and — by default — live tools-schema token counts from a local stdio probe |

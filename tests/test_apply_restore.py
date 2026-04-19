@@ -257,11 +257,11 @@ def test_apply_findings_survives_malformed_json_config(tmp_path: Path) -> None:
             type_="unused_mcp",
         ),
         _finding(
-            fid="claude_md_oversized:1",
+            fid="claude_md_duplicate:1",
             primitive="remove_claude_md_section",
             path=good_md,
             heading="Drop",
-            type_="claude_md_oversized",
+            type_="claude_md_duplicate",
         ),
     ]
     snapshots_dir = claude_home / ".unclog" / "snapshots"
