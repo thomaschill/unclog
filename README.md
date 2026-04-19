@@ -1,5 +1,7 @@
 # unclog
 
+[![PyPI](https://img.shields.io/pypi/v/unclog.svg)](https://pypi.org/project/unclog/)
+
 **Every MCP, skill, hook, and CLAUDE.md line you've installed is charging you on every turn.** `unclog` scans your Claude Code install, measures the bloat, and offers a reversible fix.
 
 ```
@@ -10,11 +12,11 @@ uv tool install unclog
 unclog
 ```
 
-![unclog scan output](screenshot.png)
+![unclog scan output](https://raw.githubusercontent.com/thomaschill/unclog/main/screenshot.png)
 
 ## Demo
 
-![unclog interactive fix flow](demo.gif)
+![unclog interactive fix flow](https://raw.githubusercontent.com/thomaschill/unclog/main/demo.gif)
 
 ## What it finds
 
