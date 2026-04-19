@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 from collections.abc import Sequence
@@ -64,6 +65,33 @@ def _write_json_config(path: Path, data: Any, finding_id: str) -> None:
     """Write JSON back to a config file, converting OSError to ApplyError."""
     try:
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        raise ApplyError(f"could not write {path} (finding {finding_id}): {exc}") from exc
+
+
+def _read_utf8(path: Path, finding_id: str) -> str:
+    """Read a CLAUDE.md-style file as UTF-8, converting failures to ApplyError.
+
+    ``claude_md_dead_ref`` and the scope detectors happily run on
+    files their scan read with ``errors="replace"``, so a user with a
+    Latin-1 or Windows-1252 CLAUDE.md can see findings that the apply
+    primitives can't act on. Refuse explicitly instead of corrupting
+    non-ASCII bytes via a lossy re-encode.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ApplyError(f"could not read {path} (finding {finding_id}): {exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise ApplyError(
+            f"{path} is not UTF-8; unclog will not edit non-UTF-8 "
+            f"CLAUDE.md files in v0.1 (finding {finding_id}): {exc}"
+        ) from exc
+
+
+def _write_utf8(path: Path, text: str, finding_id: str) -> None:
+    try:
+        path.write_text(text, encoding="utf-8")
     except OSError as exc:
         raise ApplyError(f"could not write {path} (finding {finding_id}): {exc}") from exc
 
@@ -123,16 +151,6 @@ def _primitive_delete_file(
             shutil.rmtree(target)
         else:
             target.unlink()
-            # Remove the parent directory too when the target is the only
-            # file in a dedicated skill folder — snapshots preserve the
-            # tree so restore still works.
-            parent = target.parent
-            if parent != claude_home and parent.is_dir():
-                try:
-                    if not any(parent.iterdir()):
-                        parent.rmdir()
-                except OSError:
-                    pass
     except OSError as exc:
         raise ApplyError(f"could not delete {target}: {exc}") from exc
     return record
@@ -299,14 +317,32 @@ def _primitive_uninstall_plugin(
     _write_json_config(installed_path, data, finding.id)
 
     cache_dir = claude_home / "plugins" / "cache" / name
-    if cache_dir.is_dir():
+    # ``is_symlink()`` first: a plugin manager that symlinks the cache
+    # into a shared location would crash ``rmtree`` (same class of bug
+    # as the 166-skill symlink incident). Capture the link as a link
+    # and ``unlink()`` the pointer; leave the backing tree untouched.
+    if cache_dir.is_symlink():
+        snapshot.capture_file(
+            cache_dir,
+            finding.id,
+            action="uninstall_plugin:cache",
+            details={"plugin_key": plugin_key, "symlink": True},
+        )
+        try:
+            cache_dir.unlink()
+        except OSError as exc:
+            raise ApplyError(f"could not remove plugin cache link {cache_dir}: {exc}") from exc
+    elif cache_dir.is_dir():
         snapshot.capture_file(
             cache_dir,
             finding.id,
             action="uninstall_plugin:cache",
             details={"plugin_key": plugin_key},
         )
-        shutil.rmtree(cache_dir)
+        try:
+            shutil.rmtree(cache_dir)
+        except OSError as exc:
+            raise ApplyError(f"could not remove plugin cache {cache_dir}: {exc}") from exc
     return record
 
 
@@ -332,8 +368,8 @@ def _primitive_remove_claude_md_section(
         action="remove_claude_md_section",
         details={**action_snapshot_hint(action), "heading": action.heading},
     )
-    new_text = _strip_section(target.read_text(encoding="utf-8"), action.heading)
-    target.write_text(new_text, encoding="utf-8")
+    new_text = _strip_section(_read_utf8(target, finding.id), action.heading)
+    _write_utf8(target, new_text, finding.id)
     return record
 
 
@@ -385,9 +421,9 @@ def _primitive_remove_claude_md_lines(
         },
     )
     to_drop = set(action.line_numbers)
-    lines = target.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = _read_utf8(target, finding.id).splitlines(keepends=True)
     kept = [line for idx, line in enumerate(lines, start=1) if idx not in to_drop]
-    target.write_text("".join(kept), encoding="utf-8")
+    _write_utf8(target, "".join(kept), finding.id)
     return record
 
 
@@ -415,7 +451,7 @@ def _primitive_move_claude_md_section(
     destination = Path(destination_raw).expanduser()
     if not source.is_file():
         raise ApplyError(f"source CLAUDE.md not found: {source}")
-    source_text = source.read_text(encoding="utf-8")
+    source_text = _read_utf8(source, finding.id)
     section = _find_section_by_heading(parse_sections(source_text), action.heading)
     if section is None:
         raise ApplyError(f"heading {action.heading!r} not found in {source}")
@@ -445,20 +481,26 @@ def _primitive_move_claude_md_section(
     new_source = (
         encoded[: section.byte_offset] + encoded[section.byte_offset + section.byte_length :]
     ).decode("utf-8")
-    source.write_text(new_source, encoding="utf-8")
+    _write_utf8(source, new_source, finding.id)
     # 3. Append to destination (creating it if needed).
     destination.parent.mkdir(parents=True, exist_ok=True)
-    existing = destination.read_text(encoding="utf-8") if destination.is_file() else ""
+    existing = _read_utf8(destination, finding.id) if destination.is_file() else ""
     separator = "" if existing == "" or existing.endswith("\n\n") else (
         "\n" if existing.endswith("\n") else "\n\n"
     )
-    destination.write_text(existing + separator + section_text, encoding="utf-8")
+    _write_utf8(destination, existing + separator + section_text, finding.id)
     return record
 
 
 # ---------------------------------------------------------------------------
 # open_in_editor / flag_only
 # ---------------------------------------------------------------------------
+
+
+_FORK_RETURN_EDITORS: frozenset[str] = frozenset(
+    {"code", "code-insiders", "cursor", "windsurf", "subl", "mate", "atom"}
+)
+_WAIT_FLAGS: frozenset[str] = frozenset({"--wait", "-w", "-W"})
 
 
 def _primitive_open_in_editor(
@@ -469,19 +511,45 @@ def _primitive_open_in_editor(
     We still record the action in the manifest so ``unclog restore``
     shows what the user was prompted to do, but no file copy is made
     — the user may or may not save changes.
+
+    ``$EDITOR`` is parsed with :func:`shlex.split` so compound values
+    like ``code --wait`` work. For GUI editors that fork-and-return
+    by default (``code``, ``subl``, ``mate``, ...), a ``--wait`` flag
+    is inserted if the user hasn't already supplied one, so the user
+    returns to the unclog apply flow only after they actually close
+    the file.
     """
     action = finding.action
     if action.path is None:
         raise ApplyError(f"open_in_editor requires a path (finding {finding.id})")
-    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
-    if not editor:
+    editor_env = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if not editor_env:
         raise ApplyError("open_in_editor requires $EDITOR or $VISUAL to be set")
+    try:
+        editor_argv = shlex.split(editor_env)
+    except ValueError as exc:
+        raise ApplyError(f"$EDITOR could not be parsed: {editor_env!r}: {exc}") from exc
+    if not editor_argv:
+        raise ApplyError("$EDITOR is empty after parsing")
+    editor_bin = Path(editor_argv[0]).name
+    # If the user picked a GUI fork-return editor and didn't pass a wait
+    # flag themselves, add one. Terminal editors (vim, nano, emacs,
+    # hx, micro) block on their own, so we leave their argv alone.
+    if editor_bin in _FORK_RETURN_EDITORS and not any(
+        arg in _WAIT_FLAGS for arg in editor_argv[1:]
+    ):
+        editor_argv.append("--wait")
     target = str(action.path.expanduser())
-    args = [editor, target]
+    args = list(editor_argv)
     if action.line_numbers:
-        # nano, vim, emacs, code all accept a +N line hint (code uses --goto path:N).
+        # nano, vim, emacs accept +N; VS Code-family uses --goto path:N.
         first_line = action.line_numbers[0]
-        args.insert(1, f"+{first_line}")
+        if editor_bin in {"code", "code-insiders", "cursor", "windsurf"}:
+            args.extend(["--goto", f"{target}:{first_line}"])
+        else:
+            args.extend([f"+{first_line}", target])
+    else:
+        args.append(target)
     try:
         subprocess.run(args, check=False)
     except OSError as exc:
@@ -492,7 +560,7 @@ def _primitive_open_in_editor(
         action="open_in_editor",
         original_path=target,
         snapshot_path="",
-        details={**action_snapshot_hint(action), "editor": editor},
+        details={**action_snapshot_hint(action), "editor": editor_env},
     )
     snapshot.actions.append(record)
     return record

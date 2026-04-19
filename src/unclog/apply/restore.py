@@ -15,6 +15,13 @@ sees them in the summary so they know what was logged.
 Partial restores are tolerated. If one action fails, the remaining
 actions still run; the result object lists every failure so the CLI
 can report them instead of aborting silently.
+
+Paths are sandboxed against the snapshot's declared ``claude_home`` and
+``project_paths``. A tampered manifest that points ``original_path`` at
+``~/.ssh/authorized_keys`` or a ``snapshot_path`` that escapes
+``files/`` via ``../../`` is refused before any filesystem mutation —
+local security boundary, not a perfect one, but enough to defeat the
+accidental or compromised-plugin vector.
 """
 
 from __future__ import annotations
@@ -55,12 +62,70 @@ def restore_snapshot(snapshot: Snapshot) -> RestoreResult:
     return result
 
 
+def _is_path_within(child: Path, parent: Path) -> bool:
+    """Return True iff ``child`` is equal to or nested under ``parent``.
+
+    Parent components of ``child`` are resolved so a ``..`` escape
+    (e.g. ``snapshot_path="../../../etc/passwd"``) is caught — the
+    ``..`` gets collapsed by resolve(). The final component is NOT
+    resolved: a captured symlink points out of ``files/`` by design,
+    and a user file that's a symlink must still route to its own
+    location, not its target's.
+    """
+    try:
+        parent_r = parent.resolve(strict=False)
+        child_r = child.parent.resolve(strict=False) / child.name
+    except (OSError, RuntimeError):
+        return False
+    try:
+        child_r.relative_to(parent_r)
+    except ValueError:
+        return False
+    return True
+
+
+def _destination_allowed(snapshot: Snapshot, destination: Path) -> bool:
+    """Refuse ``original_path`` values that escape the capture roots.
+
+    Allowed: anywhere under ``snapshot.claude_home``, anywhere under any
+    path in ``snapshot.project_paths``, or the ``~/.claude.json``
+    sibling used by the outside-layout install. Everything else is
+    rejected — a manifest that claims to restore ``/etc/passwd`` or
+    ``~/.ssh/authorized_keys`` is almost certainly tampered or corrupt.
+    """
+    if _is_path_within(destination, snapshot.claude_home):
+        return True
+    outside_config = snapshot.claude_home.resolve(strict=False).parent / ".claude.json"
+    try:
+        if destination.resolve(strict=False) == outside_config:
+            return True
+    except (OSError, RuntimeError):
+        pass
+    for project in snapshot.project_paths:
+        if _is_path_within(destination, project):
+            return True
+    return False
+
+
+def _source_allowed(snapshot: Snapshot, source: Path) -> bool:
+    """Refuse ``snapshot_path`` values that escape ``files/`` via ``..``."""
+    return _is_path_within(source, snapshot.files_root)
+
+
 def _restore_one(snapshot: Snapshot, action: SnapshotAction) -> None:
     if not action.snapshot_path:
         # Informational actions (open_in_editor, flag_only) have no bytes.
         return
     source = snapshot.files_root / action.snapshot_path
     destination = Path(action.original_path)
+    if not _destination_allowed(snapshot, destination):
+        raise RuntimeError(
+            f"refusing to restore to path outside capture roots: {destination}"
+        )
+    if not _source_allowed(snapshot, source):
+        raise RuntimeError(
+            f"refusing to read snapshot bytes outside files/: {source}"
+        )
     if source.is_symlink():
         # Captured symlinks are recreated as symlinks; don't walk into
         # their dereferenced targets (the backing tree was never part

@@ -206,16 +206,38 @@ def _relative_snapshot_path(
 
     ``files/home/<path-relative-to-claude-home>`` when the file lives
     under ``claude_home``, else ``files/projects/<name>/<rel>`` when it
-    lives under a known project, else ``files/external/<name>`` as a
-    last resort (an external path under neither root should never appear
-    in v0.1, but we degrade rather than crash).
+    lives under a known project. Also accepts ``~/.claude.json`` (the
+    "outside layout" config the user's installation may use) because
+    primitives legitimately edit it.
+
+    Anything else raises :class:`SnapshotError`. An external path means
+    a detector asked to destructively edit a file outside every known
+    scope — refusing is safer than silently capturing into a
+    collision-prone ``files/external/<basename>`` bucket that would
+    quietly overwrite earlier captures under the same basename.
+
+    Only the parent is resolved. A plugin-installed skill that lives
+    at ``<claude_home>/skills/gsap`` as a symlink into
+    ``~/.agents/skills/gsap`` must still route to ``files/home/skills/gsap``
+    — the link's own position — because that's where the delete_file
+    primitive operates. Resolving the final path component would follow
+    the link out of claude_home and refuse the capture.
     """
-    original_resolved = original.expanduser().resolve(strict=False)
+    expanded = original.expanduser()
     try:
-        rel = original_resolved.relative_to(claude_home.resolve(strict=False))
+        original_resolved = expanded.parent.resolve(strict=False) / expanded.name
+    except (OSError, RuntimeError):
+        original_resolved = expanded
+    claude_home_resolved = claude_home.resolve(strict=False)
+    try:
+        rel = original_resolved.relative_to(claude_home_resolved)
         return Path("home") / rel
     except ValueError:
         pass
+    # Accept the outside-layout .claude.json as "home" too.
+    outside_claude_json = claude_home_resolved.parent / ".claude.json"
+    if original_resolved == outside_claude_json:
+        return Path("home") / ".claude.json"
     names_in_use: dict[str, int] = {}
     for project in project_paths:
         project_resolved = project.expanduser().resolve(strict=False)
@@ -228,7 +250,10 @@ def _relative_snapshot_path(
             return Path("projects") / label / rel
         except ValueError:
             continue
-    return Path("external") / original_resolved.name
+    raise SnapshotError(
+        f"refusing to capture path outside claude_home and known projects: "
+        f"{original_resolved}"
+    )
 
 
 def create_snapshot(

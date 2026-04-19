@@ -70,8 +70,9 @@ def test_delete_file_removes_target_and_captures_bytes(tmp_path: Path) -> None:
     record = apply_action(finding, snap, claude_home=claude_home)
 
     assert not skill_md.exists()
-    # The parent directory should also be gone (empty after delete).
-    assert not skill_md.parent.exists()
+    # Parent dir is deliberately left behind — removing it loses any
+    # custom permissions the user set and makes restore less faithful.
+    assert skill_md.parent.is_dir()
     # Snapshot copy is preserved.
     assert (snap.files_root / record.snapshot_path).read_text(encoding="utf-8") == "body\n"
 
@@ -338,3 +339,143 @@ def test_flag_only_records_intent_without_mutating(tmp_path: Path) -> None:
     )
     apply_action(finding, snap, claude_home=claude_home)
     assert any(a.action == "flag_only" for a in snap.actions)
+
+
+# -- uninstall_plugin symlink safety (regression for cache-as-symlink) ------
+
+
+def test_uninstall_plugin_unlinks_symlinked_cache_dir(tmp_path: Path) -> None:
+    """Regression: a plugin manager may symlink the cache dir to a shared
+    location. ``rmtree`` refuses symlinks — same class as the skill bug —
+    so the primitive must branch to ``unlink`` for the symlink case and
+    leave the backing tree alone.
+    """
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    installed = claude_home / "plugins" / "installed_plugins.json"
+    installed.parent.mkdir(parents=True)
+    installed.write_text(
+        json.dumps({"plugins": [{"name": "acme"}]}), encoding="utf-8"
+    )
+    backing = tmp_path / "shared-plugin-cache" / "acme"
+    backing.mkdir(parents=True)
+    (backing / "marker.txt").write_text("do not touch\n", encoding="utf-8")
+    cache_link = claude_home / "plugins" / "cache" / "acme"
+    cache_link.parent.mkdir(parents=True)
+    cache_link.symlink_to(backing)
+
+    snap = _snapshot(tmp_path, claude_home)
+    finding = _finding(
+        fid="disabled_plugin_residue:acme@foo",
+        type_="disabled_plugin_residue",
+        primitive="uninstall_plugin",
+        plugin_key="acme@foo",
+    )
+    apply_action(finding, snap, claude_home=claude_home)
+
+    assert not cache_link.is_symlink()
+    # Backing tree untouched — deleting it would clobber other plugins
+    # that share the same cache.
+    assert (backing / "marker.txt").read_text(encoding="utf-8") == "do not touch\n"
+
+
+# -- non-UTF-8 CLAUDE.md (regression; would have corrupted bytes) -----------
+
+
+def test_remove_claude_md_section_refuses_non_utf8(tmp_path: Path) -> None:
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    md_path = claude_home / "CLAUDE.md"
+    # Windows-1252 bytes that aren't valid UTF-8.
+    md_path.write_bytes(b"# Keep\n\x95 bullet\n# Drop\nbody\n")
+    snap = _snapshot(tmp_path, claude_home)
+    finding = _finding(
+        fid="dup:1",
+        type_="claude_md_duplicate",
+        primitive="remove_claude_md_section",
+        path=md_path,
+        heading="Drop",
+    )
+    with pytest.raises(ApplyError, match="not UTF-8"):
+        apply_action(finding, snap, claude_home=claude_home)
+
+
+# -- open_in_editor argv parsing (regression for $EDITOR with spaces) -------
+
+
+def test_open_in_editor_shlex_splits_compound_editor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: ``EDITOR="code --wait"`` used to be treated as a single
+    binary name and failed with ``FileNotFoundError``. shlex.split fixes it.
+    """
+    import subprocess as sp
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    target = claude_home / "CLAUDE.md"
+    target.write_text("x", encoding="utf-8")
+    snap = _snapshot(tmp_path, claude_home)
+
+    captured: list[list[str]] = []
+
+    def fake_run(args, check=False):  # type: ignore[no-untyped-def]
+        captured.append(list(args))
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setenv("EDITOR", "code --wait")
+    finding = _finding(
+        fid="claude_md_oversized:1",
+        type_="claude_md_oversized",
+        primitive="open_in_editor",
+        path=target,
+    )
+    apply_action(finding, snap, claude_home=claude_home)
+    assert captured, "subprocess.run was not called"
+    argv = captured[0]
+    # Binary is parsed on its own; --wait survived shlex; no duplicate wait
+    # flag was appended because the user already had one.
+    assert argv[0] == "code"
+    assert argv.count("--wait") == 1
+
+
+def test_open_in_editor_adds_wait_for_gui_editor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: ``EDITOR=code`` used to fork-and-return, so the apply
+    summary ran while the user was still editing. Insert ``--wait`` so
+    the GUI blocks until the file is closed.
+    """
+    import subprocess as sp
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    target = claude_home / "CLAUDE.md"
+    target.write_text("x", encoding="utf-8")
+    snap = _snapshot(tmp_path, claude_home)
+
+    captured: list[list[str]] = []
+
+    def fake_run(args, check=False):  # type: ignore[no-untyped-def]
+        captured.append(list(args))
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setenv("EDITOR", "code")
+    finding = _finding(
+        fid="claude_md_oversized:1",
+        type_="claude_md_oversized",
+        primitive="open_in_editor",
+        path=target,
+    )
+    apply_action(finding, snap, claude_home=claude_home)
+    assert "--wait" in captured[0]

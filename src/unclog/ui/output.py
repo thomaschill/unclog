@@ -392,12 +392,16 @@ def _baseline(
     }
 
 
-def _load_findings(state: InstallationState) -> list[Finding]:
+def _load_findings(
+    state: InstallationState, *, warnings: list[str] | None = None
+) -> list[Finding]:
     """Run all detectors against ``state`` using the user's thresholds.
 
     The threshold config is loaded relative to the scanned ``claude_home``
     so the same state can be reported from different CWDs without
-    picking up ambient config.
+    picking up ambient config. ``warnings`` is populated with any
+    detector-skipped notices so the caller can surface them alongside
+    the scan warnings already on ``state.warnings``.
     """
     paths = ClaudePaths(home=state.claude_home)
     thresholds = load_thresholds(paths.config_toml)
@@ -406,15 +410,24 @@ def _load_findings(state: InstallationState) -> list[Finding]:
         state.global_scope.activity,
         thresholds,
         now=state.generated_at,
+        warnings=warnings,
     )
 
 
 def build_report(state: InstallationState) -> dict[str, Any]:
-    """Return the full machine-readable report as a plain dict."""
+    """Return the full machine-readable report as a plain dict.
+
+    Detector warnings (from broken detectors that were skipped) are
+    merged into the ``warnings`` field alongside scan warnings so JSON
+    consumers see the same signal as the TTY renderer. Without this
+    merge, a CI pipeline reading ``--json`` would silently miss a
+    category whose detector crashed on bad input.
+    """
     counter = TiktokenCounter()
     composition = build_composition(state, counter)
     session = state.global_scope.latest_session
-    findings = _load_findings(state)
+    detector_warnings: list[str] = []
+    findings = _load_findings(state, warnings=detector_warnings)
     report: dict[str, Any] = {
         "schema": SCHEMA_ID,
         "unclog_version": __version__,
@@ -424,7 +437,7 @@ def build_report(state: InstallationState) -> dict[str, Any]:
         "inventory": _inventory(state),
         "composition": composition,
         "findings": [f.to_json() for f in findings],
-        "warnings": list(state.warnings),
+        "warnings": [*state.warnings, *detector_warnings],
         "projects_audited": _projects_audited(state),
     }
     probes = state.global_scope.mcp_probes

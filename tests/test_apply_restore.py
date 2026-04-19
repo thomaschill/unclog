@@ -5,10 +5,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 
+import pytest
+
 from unclog.apply.primitives import apply_action
 from unclog.apply.restore import restore_snapshot
 from unclog.apply.runner import apply_findings
-from unclog.apply.snapshot import create_snapshot, load_snapshot
+from unclog.apply.snapshot import (
+    SnapshotAction,
+    SnapshotError,
+    create_snapshot,
+    load_snapshot,
+)
 from unclog.findings.base import Action, Finding, Scope
 
 NOW = datetime(2026, 4, 17, 18, 42, tzinfo=UTC)
@@ -266,3 +273,75 @@ def test_apply_findings_survives_malformed_json_config(tmp_path: Path) -> None:
     assert result.persist_error is None
     assert result.snapshot.manifest_path.is_file()
     assert "Drop" not in good_md.read_text(encoding="utf-8")
+
+
+def test_capture_refuses_path_outside_claude_home_and_projects(tmp_path: Path) -> None:
+    """Regression: ``external/<basename>`` used to silently collide on
+    two captures with the same basename, overwriting the earlier one in
+    the snapshot store. Refusing external paths outright is safer.
+    """
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    stray = tmp_path / "not-a-project" / "CLAUDE.md"
+    stray.parent.mkdir()
+    stray.write_text("body\n", encoding="utf-8")
+    snap = create_snapshot(tmp_path / "snapshots", claude_home=claude_home, now=NOW)
+    with pytest.raises(SnapshotError, match="outside claude_home"):
+        snap.capture_file(stray, "x", action="delete_file")
+
+
+def test_restore_refuses_tampered_original_path(tmp_path: Path) -> None:
+    """Regression: a malicious/corrupt manifest could redirect
+    ``shutil.copy2`` to anywhere the user has write access
+    (~/.ssh/authorized_keys, ~/.zshrc). Restore must refuse paths outside
+    the capture roots before touching the filesystem.
+    """
+    import json as _json
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    victim = tmp_path / "outside" / "zshrc"
+    victim.parent.mkdir()
+    victim.write_text("safe\n", encoding="utf-8")
+    snap = create_snapshot(tmp_path / "snapshots", claude_home=claude_home, now=NOW)
+    # Legitimately capture a file inside claude_home so the snapshot has
+    # bytes on disk to potentially copy.
+    inside = claude_home / "CLAUDE.md"
+    inside.write_text("evil payload\n", encoding="utf-8")
+    snap.capture_file(inside, "x", action="remove_claude_md_section")
+    snap.persist()
+    # Tamper: rewrite the manifest so its single action points at the
+    # victim path with the snapshot's real captured bytes as the source.
+    manifest = _json.loads(snap.manifest_path.read_text(encoding="utf-8"))
+    manifest["actions"][0]["original_path"] = str(victim)
+    snap.manifest_path.write_text(_json.dumps(manifest), encoding="utf-8")
+    reloaded = load_snapshot(tmp_path / "snapshots", snap.id)
+    result = restore_snapshot(reloaded)
+    assert not result.restored
+    assert len(result.failed) == 1
+    assert "outside capture roots" in result.failed[0][1]
+    # Victim untouched.
+    assert victim.read_text(encoding="utf-8") == "safe\n"
+
+
+def test_restore_refuses_dotdot_snapshot_path(tmp_path: Path) -> None:
+    """Regression: a ``snapshot_path`` with ``..`` escapes ``files/``."""
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    inside = claude_home / "CLAUDE.md"
+    inside.write_text("ok\n", encoding="utf-8")
+    snap = create_snapshot(tmp_path / "snapshots", claude_home=claude_home, now=NOW)
+    # Hand-build a malicious action — no primitive produces this.
+    snap.actions.append(
+        SnapshotAction(
+            finding_id="evil",
+            action="remove_claude_md_section",
+            original_path=str(inside),
+            snapshot_path="../../../../etc/passwd",
+            details={},
+        )
+    )
+    result = restore_snapshot(snap)
+    assert not result.restored
+    assert len(result.failed) == 1
+    assert "outside files/" in result.failed[0][1]

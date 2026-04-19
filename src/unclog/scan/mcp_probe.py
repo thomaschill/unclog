@@ -159,7 +159,34 @@ def _drain_thread(stream: Any, out_q: queue.Queue[bytes | None]) -> None:
         out_q.put(None)
 
 
-def _truncate_stderr(raw: bytes | None) -> str:
+def _drain_stderr_tail(stream: Any, out: list[bytes], cap_bytes: int) -> None:
+    """Thread target: accumulate stderr into ``out``, capped at ``cap_bytes``.
+
+    A misbehaving server that streams megabytes to stderr must never
+    stall the probe: we read in chunks, keep only the tail, and stop
+    the moment the stream closes. The main thread teardown path joins
+    us with a short timeout — if we're still running after that, the
+    thread is ``daemon=True`` so interpreter shutdown can reap it.
+    """
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                return
+            out.append(chunk)
+            joined_len = sum(len(c) for c in out)
+            if joined_len > cap_bytes * 4:
+                # Keep rolling the tail: once we've buffered 4x the cap,
+                # collapse back down to 2x so we're not hoarding GBs of
+                # tracing output we'll never render.
+                collapsed = b"".join(out)[-cap_bytes * 2 :]
+                out.clear()
+                out.append(collapsed)
+    except OSError:
+        return
+
+
+def _truncate_stderr(raw: bytes) -> str:
     if not raw:
         return ""
     text = raw.decode("utf-8", errors="replace").strip()
@@ -236,9 +263,11 @@ def probe_server(
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    # Background thread so we don't block on readline while the
+    # Background threads so we don't block on readline while the
     # server is still warming up; we can bail the moment we see our
-    # tools/list response.
+    # tools/list response. A separate stderr drainer prevents a server
+    # that dumps large volumes of stderr (e.g. verbose tracing on
+    # SIGKILL) from blocking the main thread during teardown.
     stdout_q: queue.Queue[bytes | None] = queue.Queue()
     reader = threading.Thread(
         target=_drain_thread,
@@ -246,6 +275,15 @@ def probe_server(
         daemon=True,
     )
     reader.start()
+    stderr_chunks: list[bytes] = []
+    stderr_reader: threading.Thread | None = None
+    if proc.stderr is not None:
+        stderr_reader = threading.Thread(
+            target=_drain_stderr_tail,
+            args=(proc.stderr, stderr_chunks, _STDERR_TAIL_CHARS),
+            daemon=True,
+        )
+        stderr_reader.start()
 
     try:
         assert proc.stdin is not None
@@ -306,17 +344,29 @@ def probe_server(
         pass
     if proc.poll() is None:
         proc.kill()
-    try:
-        stderr_bytes = proc.stderr.read() if proc.stderr is not None else b""
-    except OSError:
-        stderr_bytes = b""
+    # Wait for the process to actually die — reaps the child so we
+    # don't accumulate zombies when a scan probes many broken servers.
     try:
         proc.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
         pass
+    # Close stdout so the stdout drain thread unblocks; the stderr
+    # drain thread is already returning because the kernel closed stderr
+    # on kill. Give both a short grace period, but don't deadlock the
+    # scan on a stuck thread — they're daemonised so interpreter
+    # shutdown will eventually reap them.
+    for stream in (proc.stdout, proc.stderr):
+        try:
+            if stream is not None and not stream.closed:
+                stream.close()
+        except OSError:
+            pass
+    if stderr_reader is not None:
+        stderr_reader.join(timeout=0.5)
+    reader.join(timeout=0.5)
 
     duration_ms = int((time.monotonic() - started) * 1000)
-    stderr_tail = _truncate_stderr(stderr_bytes)
+    stderr_tail = _truncate_stderr(b"".join(stderr_chunks))
 
     if tools_resp is None:
         err = error_from_stdin or "no tools/list response before timeout"

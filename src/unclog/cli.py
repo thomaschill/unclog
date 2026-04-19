@@ -204,22 +204,24 @@ def _launch_interactive(
     yes: bool,
     no_animation: bool,
 ) -> None:
-    """Gate the interactive fix flow behind the scan + findings layer."""
+    """Gate the interactive fix flow behind the scan + findings layer.
+
+    Detector warnings are NOT re-printed here — they've already been
+    surfaced by the scan report (via ``build_report``'s merged warnings
+    field) rendered moments earlier. Printing them again would create a
+    duplicate, confusing noise block above the picker.
+    """
     from unclog.findings import detect, load_thresholds
     from unclog.findings.curate import build_curate_findings
 
     paths = claude_paths()
     thresholds = load_thresholds(paths.config_toml)
-    detector_warnings: list[str] = []
     findings = detect(
         state,
         state.global_scope.activity,
         thresholds,
         now=state.generated_at,
-        warnings=detector_warnings,
     )
-    for warning in detector_warnings:
-        console.print(f"[yellow]![/yellow] {warning}")
     curate_findings = build_curate_findings(state)
     if not findings and not curate_findings:
         return

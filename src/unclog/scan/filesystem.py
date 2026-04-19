@@ -10,6 +10,7 @@ lands when we actually need it.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,13 +125,31 @@ def _split_frontmatter(text: str) -> tuple[Mapping[str, str], int, int]:
 
 
 def _dir_total_bytes(path: Path) -> int:
+    """Sum the size of every file under ``path`` without following symlinks.
+
+    ``rglob`` follows directory symlinks by default on Python < 3.13,
+    so a skill with a circular symlink (``skills/foo/loop -> ../..``)
+    would walk the tree forever. We walk by hand with
+    :func:`os.walk` and ``followlinks=False`` to stay safe across
+    Python versions.
+    """
     total = 0
-    for child in path.rglob("*"):
-        if child.is_file():
-            try:
-                total += child.stat().st_size
-            except OSError:
-                continue
+    try:
+        for root, _dirs, files in os.walk(path, followlinks=False):
+            for name in files:
+                entry = Path(root) / name
+                try:
+                    if entry.is_symlink():
+                        # Don't stat across symlinks — the target might
+                        # be huge, shared, or missing; reporting the
+                        # link's own size is the honest thing to do.
+                        total += entry.lstat().st_size
+                    elif entry.is_file():
+                        total += entry.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        return total
     return total
 
 
@@ -186,7 +205,15 @@ def enumerate_agents(agents_dir: Path) -> tuple[Agent, ...]:
         return ()
     agents: list[Agent] = []
     seen_slugs: set[str] = set()
-    for entry in sorted(agents_dir.rglob("*.md")):
+    md_files: list[Path] = []
+    # ``os.walk`` with ``followlinks=False`` prevents a circular
+    # directory symlink from spinning forever; ``Path.rglob`` follows
+    # dir symlinks on Python < 3.13, so we don't rely on it.
+    for root, _dirs, files in os.walk(agents_dir, followlinks=False):
+        for name in files:
+            if name.endswith(".md"):
+                md_files.append(Path(root) / name)
+    for entry in sorted(md_files):
         if not entry.is_file():
             continue
         try:
