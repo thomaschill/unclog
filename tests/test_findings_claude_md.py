@@ -6,6 +6,8 @@ from types import MappingProxyType
 
 import pytest
 
+from unclog.apply.primitives import apply_action
+from unclog.apply.snapshot import create_snapshot
 from unclog.findings import detect
 from unclog.findings.thresholds import Thresholds
 from unclog.scan.config import ClaudeConfig, Settings
@@ -245,6 +247,68 @@ def test_project_to_global_skipped_when_global_has_same_section(tmp_path: Path) 
     )
     findings = detect(state, ActivityIndex(), _defaults(), now=NOW)
     assert all(f.type != "scope_mismatch_project_to_global" for f in findings)
+
+
+def test_global_to_project_finding_applies_cleanly(tmp_path: Path) -> None:
+    """End-to-end: the finding produced by detect() must satisfy the primitive."""
+    project = tmp_path / "draper"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "foo.py").write_text("", encoding="utf-8")
+    claude_home = tmp_path / ".claude"
+    global_md = (
+        "# Keep me\nstays put\n"
+        "# Draper-only\n"
+        f"- look at `{project}/src/foo.py`\n"
+    )
+    state = _state(
+        claude_home=claude_home,
+        global_md=global_md,
+        projects=(project,),
+        config_projects=(project,),
+    )
+    findings = detect(state, ActivityIndex(), _defaults(), now=NOW)
+    gtp = next(f for f in findings if f.type == "scope_mismatch_global_to_project")
+
+    snap = create_snapshot(
+        tmp_path / "snapshots",
+        claude_home=claude_home,
+        project_paths=(project,),
+        now=NOW,
+    )
+    apply_action(gtp, snap, claude_home=claude_home)
+
+    assert "Draper-only" not in (claude_home / "CLAUDE.md").read_text(encoding="utf-8")
+    dest_text = (project / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "Draper-only" in dest_text
+
+
+def test_project_to_global_finding_applies_cleanly(tmp_path: Path) -> None:
+    """Regression: promote-to-global finding used to omit destination_path."""
+    shared = "# Shared rule\nnever commit to main\n"
+    projects: list[Path] = []
+    for name in ("alpha", "bravo", "charlie"):
+        project = tmp_path / name
+        project.mkdir()
+        (project / "CLAUDE.md").write_text(shared, encoding="utf-8")
+        projects.append(project)
+    claude_home = tmp_path / ".claude"
+    state = _state(claude_home=claude_home, projects=tuple(projects))
+    findings = detect(state, ActivityIndex(), _defaults(), now=NOW)
+    ptg = next(f for f in findings if f.type == "scope_mismatch_project_to_global")
+
+    snap = create_snapshot(
+        tmp_path / "snapshots",
+        claude_home=claude_home,
+        project_paths=tuple(projects),
+        now=NOW,
+    )
+    # Must not raise ApplyError("missing evidence.destination_path").
+    apply_action(ptg, snap, claude_home=claude_home)
+
+    # Section lands in global CLAUDE.md and is stripped from the canonical source.
+    assert "Shared rule" in (claude_home / "CLAUDE.md").read_text(encoding="utf-8")
+    canonical_source = Path(ptg.evidence["source_path"])
+    assert "Shared rule" not in canonical_source.read_text(encoding="utf-8")
 
 
 def test_project_to_global_respects_promote_min_projects_threshold(tmp_path: Path) -> None:

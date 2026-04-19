@@ -31,6 +31,7 @@ from unclog.findings.thresholds import Thresholds
 from unclog.scan.claude_md import MeasuredSection, iter_resolved_paths
 from unclog.scan.stats import ActivityIndex
 from unclog.state import InstallationState
+from unclog.util.paths import ClaudePaths
 
 
 def detect(
@@ -43,9 +44,14 @@ def detect(
 ) -> list[Finding]:
     findings: list[Finding] = []
     known_projects = _known_project_paths(state)
+    global_claude_md = ClaudePaths(home=state.claude_home).claude_md
     findings.extend(_detect_global_to_project(context, known_projects))
     findings.extend(
-        _detect_project_to_global(context, min_projects=thresholds.promote_min_projects)
+        _detect_project_to_global(
+            context,
+            min_projects=thresholds.promote_min_projects,
+            global_claude_md=global_claude_md,
+        )
     )
     return findings
 
@@ -137,7 +143,7 @@ def _build_global_to_project(
         token_savings=measured.tokens,
         evidence={
             "source_path": str(scoped.parsed.path),
-            "target_path": str(target),
+            "destination_path": str(target),
             "heading": heading,
             "heading_path": list(section.heading_path),
             "tokens": measured.tokens,
@@ -146,7 +152,10 @@ def _build_global_to_project(
 
 
 def _detect_project_to_global(
-    context: ClaudeMdContext, *, min_projects: int
+    context: ClaudeMdContext,
+    *,
+    min_projects: int,
+    global_claude_md: Path,
 ) -> list[Finding]:
     by_hash: dict[str, list[tuple[ScopedClaudeMd, MeasuredSection]]] = defaultdict(list)
     global_hashes: set[str] = set()
@@ -170,7 +179,11 @@ def _detect_project_to_global(
         }
         if len(distinct_projects) < min_projects:
             continue
-        findings.append(_build_project_to_global(body_hash, matches, distinct_projects))
+        findings.append(
+            _build_project_to_global(
+                body_hash, matches, distinct_projects, global_claude_md
+            )
+        )
     return findings
 
 
@@ -178,6 +191,7 @@ def _build_project_to_global(
     body_hash: str,
     matches: list[tuple[ScopedClaudeMd, MeasuredSection]],
     distinct_projects: set[Path],
+    global_claude_md: Path,
 ) -> Finding:
     # Choose the first match as the canonical source; its heading drives the id.
     canonical_scoped, canonical_measured = matches[0]
@@ -206,5 +220,7 @@ def _build_project_to_global(
             "heading_path": list(section.heading_path),
             "tokens_per_project": canonical_measured.tokens,
             "project_paths": [str(p) for p in sorted(distinct_projects)],
+            "source_path": str(canonical_scoped.parsed.path),
+            "destination_path": str(global_claude_md),
         },
     )
