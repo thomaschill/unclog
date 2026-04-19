@@ -237,6 +237,29 @@ def test_remove_claude_md_section_strips_named_heading(tmp_path: Path) -> None:
     assert "Keep" in text and "Keep2" in text
 
 
+def test_remove_claude_md_section_raises_when_heading_missing(tmp_path: Path) -> None:
+    """Regression (Fix #5): a stale heading must fail loudly, not silently no-op.
+
+    Before the fix, ``_strip_section`` returned the source unchanged when
+    the heading wasn't found, so apply_action reported success and the
+    summary showed a phantom "fixed" row the user never saw a change for.
+    """
+    md_path = tmp_path / "CLAUDE.md"
+    md_path.write_text("# Kept\nbody\n", encoding="utf-8")
+    snap = _snapshot(tmp_path, tmp_path)
+    finding = _finding(
+        fid="claude_md_duplicate:gone",
+        type_="claude_md_duplicate",
+        primitive="remove_claude_md_section",
+        path=md_path,
+        heading="Nonexistent",
+    )
+    with pytest.raises(ApplyError, match="not found"):
+        apply_action(finding, snap, claude_home=tmp_path)
+    # File untouched on failure.
+    assert md_path.read_text(encoding="utf-8") == "# Kept\nbody\n"
+
+
 def test_remove_claude_md_lines_drops_specified_lines(tmp_path: Path) -> None:
     md_path = tmp_path / "CLAUDE.md"
     md_path.write_text("one\n/nope/a.py\n/nope/b.py\nfour\n", encoding="utf-8")
@@ -545,7 +568,7 @@ def test_comment_out_mcp_errors_when_project_missing_from_config(tmp_path: Path)
         server_name="ghost",
         scope=Scope(kind="project", project_path=project),
     )
-    with pytest.raises(ApplyError, match="not present"):
+    with pytest.raises(ApplyError, match="no longer in"):
         apply_action(finding, snap, claude_home=claude_home)
 
 
@@ -626,3 +649,34 @@ def test_move_claude_md_section_refuses_external_destination(tmp_path: Path) -> 
     assert not external_destination.exists()
     # Source must be untouched (capture_file raised before strip).
     assert source.read_text(encoding="utf-8") == "# Heading X\n\nbody\n"
+
+
+# -- ApplyError messages are user-facing (Fix #6) ---------------------------
+
+
+def test_apply_error_messages_have_no_finding_id_jargon(tmp_path: Path) -> None:
+    """Regression (Fix #6): ApplyError text must not leak ``(finding X)`` jargon.
+
+    Every ApplyError surfaces directly in the apply summary panel. The
+    ``(finding some_id)`` suffix used to be appended to nearly every
+    message ("primitive foo requires bar (finding unused_mcp:notion)")
+    and duplicated the id that's already shown in the failing row.
+    """
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    snap = _snapshot(tmp_path, claude_home)
+    # Exercise a few distinct error paths; each should render a clean
+    # sentence without the legacy jargon.
+    cases: list[Finding] = [
+        _finding(fid="a", type_="unused_skill", primitive="delete_file"),
+        _finding(fid="b", type_="unused_mcp", primitive="comment_out_mcp"),
+        _finding(fid="c", type_="stale_plugin", primitive="disable_plugin"),
+        _finding(fid="d", type_="claude_md_duplicate", primitive="remove_claude_md_section"),
+        _finding(fid="e", type_="claude_md_dead_ref", primitive="remove_claude_md_lines"),
+    ]
+    for finding in cases:
+        with pytest.raises(ApplyError) as exc_info:
+            apply_action(finding, snap, claude_home=claude_home)
+        message = str(exc_info.value)
+        assert "(finding " not in message, f"jargon leaked: {message!r}"
+        assert "finding {" not in message

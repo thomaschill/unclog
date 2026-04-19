@@ -76,7 +76,12 @@ class RichPrompter:
         suffix = " [Y/n] " if default else " [y/N] "
         try:
             answer = input(message + suffix).strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
+            # Pipe closed / no TTY — treat as silent "No" so non-interactive
+            # contexts never auto-apply. KeyboardInterrupt is deliberately
+            # *not* caught here: the top-level CLI wants Ctrl+C to abort
+            # the whole run cleanly rather than degrade into a "No" answer
+            # the user didn't pick.
             return False
         if not answer:
             return default

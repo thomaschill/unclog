@@ -9,6 +9,7 @@ from unclog import __version__
 from unclog.app import run_scan
 from unclog.apply.restore import restore_snapshot
 from unclog.apply.snapshot import SnapshotError, list_snapshots, load_snapshot
+from unclog.scan.config import ConfigParseError
 from unclog.state import InstallationState
 from unclog.ui.display import DisplayOptions
 from unclog.ui.interactive import InteractiveOptions, run_interactive
@@ -149,14 +150,74 @@ def root(
             yes=yes,
             no_animation=no_animation,
         )
-    except (typer.Exit, typer.Abort, typer.BadParameter, KeyboardInterrupt, SystemExit):
+    except (typer.Exit, typer.Abort, typer.BadParameter, SystemExit):
         raise
+    except KeyboardInterrupt as exc:
+        # Ctrl+C anywhere below — confirm prompt, countdown, mid-apply.
+        # Print a short acknowledgement and exit 130 instead of letting
+        # Python dump the traceback. ``_launch_interactive`` already
+        # persists any partial snapshot, so ``unclog restore`` can still
+        # recover work that was mid-flight.
+        console.print()
+        console.print("[dim]Cancelled.[/dim]")
+        raise typer.Exit(code=130) from exc
+    except (ConfigParseError, SnapshotError) as exc:
+        # User-environment errors (permission denied on config, read-only
+        # snapshot dir, corrupt JSON, …). These are not bugs — render a
+        # clean actionable message and don't point the user at the
+        # unexpected-error flow that says "file a bug report".
+        _handle_environment_error(console, exc, as_json=as_json)
+        raise typer.Exit(code=1) from exc
     except Exception as exc:
-        _handle_unexpected_error(console, exc)
+        _handle_unexpected_error(console, exc, as_json=as_json)
         raise typer.Exit(code=1) from exc
 
 
-def _handle_unexpected_error(console: Console, exc: BaseException) -> None:
+def _emit_json_error(kind: str, exc: BaseException) -> None:
+    """Print a minimal JSON error document to stdout.
+
+    Keeps ``--json`` consumers (CI pipelines, ``jq`` users) able to
+    parse stdout even on failure. The schema mirrors the success
+    document so a consumer can branch on ``"error" in doc``.
+    """
+    import json as _json
+
+    doc = {
+        "schema": "unclog.v0.1",
+        "error": {
+            "kind": kind,
+            "type": type(exc).__name__,
+            "message": str(exc),
+        },
+    }
+    typer.echo(_json.dumps(doc))
+
+
+def _handle_environment_error(
+    console: Console, exc: BaseException, *, as_json: bool
+) -> None:
+    """Render a user-environment error (permissions, corrupt config, …).
+
+    These are not bugs — the fix is in the user's filesystem or config,
+    not in unclog. We say *what* is wrong and *where* to look, and we
+    don't point at the issue tracker.
+    """
+    if as_json:
+        _emit_json_error("environment", exc)
+        return
+    console.print()
+    console.print(
+        f"[#ef4444]unclog can't continue:[/#ef4444] {exc}"
+    )
+    console.print(
+        "[dim]This looks like a filesystem or config issue, not a bug. "
+        "Check the file named above and retry.[/dim]"
+    )
+
+
+def _handle_unexpected_error(
+    console: Console, exc: BaseException, *, as_json: bool = False
+) -> None:
     """Render an unexpected crash as a clean user-facing error.
 
     The trace is still written to ``~/.claude/.unclog/last-error.log``
@@ -180,6 +241,10 @@ def _handle_unexpected_error(console: Console, exc: BaseException) -> None:
     except OSError:
         # If we can't even write the log, don't compound the problem.
         pass
+
+    if as_json:
+        _emit_json_error("unexpected", exc)
+        return
 
     console.print()
     console.print(
@@ -290,8 +355,12 @@ def restore(
             f"[#22c55e]\u2713[/#22c55e] Restored snapshot [bold]{snapshot.id}[/bold] "
             f"({len(result.restored)} action(s))"
         )
-    except (typer.Exit, typer.Abort, typer.BadParameter, KeyboardInterrupt, SystemExit):
+    except (typer.Exit, typer.Abort, typer.BadParameter, SystemExit):
         raise
+    except KeyboardInterrupt as exc:
+        console.print()
+        console.print("[dim]Cancelled.[/dim]")
+        raise typer.Exit(code=130) from exc
     except Exception as exc:
         _handle_unexpected_error(console, exc)
         raise typer.Exit(code=1) from exc

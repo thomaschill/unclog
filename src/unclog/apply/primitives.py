@@ -39,7 +39,7 @@ class ApplyError(RuntimeError):
     """Raised when a primitive cannot complete its action."""
 
 
-def _load_json_config(path: Path, finding_id: str) -> Any:
+def _load_json_config(path: Path) -> Any:
     """Read + json-decode a config file, converting every fail mode to ApplyError.
 
     The three JSON primitives all need to read ``.claude.json`` /
@@ -52,24 +52,24 @@ def _load_json_config(path: Path, finding_id: str) -> Any:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise ApplyError(f"could not read {path} (finding {finding_id}): {exc}") from exc
+        raise ApplyError(f"could not read {path}: {exc}") from exc
     except UnicodeDecodeError as exc:
-        raise ApplyError(f"{path} is not valid UTF-8 (finding {finding_id}): {exc}") from exc
+        raise ApplyError(f"{path} is not valid UTF-8: {exc}") from exc
     try:
         return json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ApplyError(f"{path} is not valid JSON (finding {finding_id}): {exc}") from exc
+        raise ApplyError(f"{path} is not valid JSON: {exc}") from exc
 
 
-def _write_json_config(path: Path, data: Any, finding_id: str) -> None:
+def _write_json_config(path: Path, data: Any) -> None:
     """Write JSON back to a config file, converting OSError to ApplyError."""
     try:
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except OSError as exc:
-        raise ApplyError(f"could not write {path} (finding {finding_id}): {exc}") from exc
+        raise ApplyError(f"could not write {path}: {exc}") from exc
 
 
-def _read_utf8(path: Path, finding_id: str) -> str:
+def _read_utf8(path: Path) -> str:
     """Read a CLAUDE.md-style file as UTF-8, converting failures to ApplyError.
 
     ``claude_md_dead_ref`` and the scope detectors happily run on
@@ -81,19 +81,18 @@ def _read_utf8(path: Path, finding_id: str) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except OSError as exc:
-        raise ApplyError(f"could not read {path} (finding {finding_id}): {exc}") from exc
+        raise ApplyError(f"could not read {path}: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise ApplyError(
-            f"{path} is not UTF-8; unclog will not edit non-UTF-8 "
-            f"CLAUDE.md files in v0.1 (finding {finding_id}): {exc}"
+            f"{path} is not UTF-8; unclog will not edit non-UTF-8 CLAUDE.md files in v0.1"
         ) from exc
 
 
-def _write_utf8(path: Path, text: str, finding_id: str) -> None:
+def _write_utf8(path: Path, text: str) -> None:
     try:
         path.write_text(text, encoding="utf-8")
     except OSError as exc:
-        raise ApplyError(f"could not write {path} (finding {finding_id}): {exc}") from exc
+        raise ApplyError(f"could not write {path}: {exc}") from exc
 
 
 def apply_action(
@@ -127,7 +126,7 @@ def _primitive_delete_file(
     action = finding.action
     target = action.path
     if target is None:
-        raise ApplyError(f"delete_file requires a path (finding {finding.id})")
+        raise ApplyError("internal error: delete_file action is missing its target path")
     target = target.expanduser()
     # ``exists()`` follows symlinks, so a symlink pointing at a missing
     # target would look absent and get skipped. Check the link itself
@@ -182,7 +181,7 @@ def _primitive_comment_out_mcp(
     action = finding.action
     name = action.server_name
     if not name:
-        raise ApplyError(f"comment_out_mcp requires a server_name (finding {finding.id})")
+        raise ApplyError("internal error: comment_out_mcp action is missing the server name")
     config_path = _resolve_claude_json(claude_home)
     if not config_path.is_file():
         raise ApplyError(f".claude.json not found at {config_path}")
@@ -192,13 +191,19 @@ def _primitive_comment_out_mcp(
         action="comment_out_mcp",
         details={**action_snapshot_hint(action), "server_name": name},
     )
-    data = _load_json_config(config_path, finding.id)
+    data = _load_json_config(config_path)
     if not isinstance(data, dict):
-        raise ApplyError(f".claude.json root is not an object: {config_path}")
+        raise ApplyError(
+            f"{config_path} is not a JSON object — the file may be corrupt. "
+            f"Restore from backup or re-run Claude Code to regenerate it."
+        )
 
     servers_container, container_label = _locate_mcp_servers(data, finding, config_path)
     if name not in servers_container:
-        raise ApplyError(f"MCP server {name!r} not present in {container_label}")
+        raise ApplyError(
+            f"MCP server {name!r} is no longer listed under {container_label} — "
+            f"it may have been removed since the scan. Re-run unclog and try again."
+        )
     disabled_key = f"{_MCP_MARKER}{name}"
     # Preserve insertion order by rebuilding the dict key-by-key.
     new_servers: dict[str, Any] = {}
@@ -209,7 +214,7 @@ def _primitive_comment_out_mcp(
             new_servers[key] = value
     # Write back into the container's parent (global root or project record).
     _replace_mcp_servers(data, finding, new_servers)
-    _write_json_config(config_path, data, finding.id)
+    _write_json_config(config_path, data)
     return record
 
 
@@ -221,37 +226,46 @@ def _locate_mcp_servers(
     Raises :class:`ApplyError` if the expected container is absent or
     malformed — e.g. a project-scoped finding whose project key was
     removed from ``.claude.json`` between scan and apply.
+
+    Error messages here surface directly in the apply panel, so they
+    name the file and suggest the likely cause (hand-edited config,
+    scan/apply race with Claude Code itself) rather than dumping JSON
+    field paths at the user.
     """
     scope = finding.scope
     if scope.kind == "project" and scope.project_path is not None:
         projects = data.get("projects")
         if not isinstance(projects, dict):
             raise ApplyError(
-                f"projects section missing or malformed in {config_path} "
-                f"(finding {finding.id})"
+                f"{config_path} no longer has a 'projects' section — the file "
+                f"may have been edited since the scan. Re-run unclog and try again."
             )
         project_key = _match_project_key(projects, scope.project_path)
         if project_key is None:
             raise ApplyError(
-                f"project {scope.project_path} not present in {config_path} "
-                f"(finding {finding.id})"
+                f"project {scope.project_path} is no longer in {config_path}. "
+                f"It may have been removed since the scan; re-run unclog and try again."
             )
         project_record = projects[project_key]
         if not isinstance(project_record, dict):
             raise ApplyError(
-                f"project record for {project_key!r} is not an object in {config_path}"
+                f"project entry for {scope.project_path} in {config_path} is "
+                f"not a JSON object — the config file may be corrupt."
             )
         servers = project_record.get("mcpServers")
         if not isinstance(servers, dict):
             raise ApplyError(
-                f"projects.{project_key!r}.mcpServers missing or malformed "
-                f"in {config_path}"
+                f"project {scope.project_path} has no MCP servers section in "
+                f"{config_path} — the server may have been removed since the scan."
             )
-        return servers, f"projects.{project_key!r}.mcpServers"
+        return servers, str(scope.project_path)
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
-        raise ApplyError(f"mcpServers missing or malformed in {config_path}")
-    return servers, f"{config_path}:mcpServers"
+        raise ApplyError(
+            f"{config_path} has no MCP servers section — the file may have "
+            f"been edited since the scan. Re-run unclog and try again."
+        )
+    return servers, str(config_path)
 
 
 def _replace_mcp_servers(
@@ -329,7 +343,7 @@ def _primitive_disable_plugin(
     action = finding.action
     plugin_key = action.plugin_key
     if not plugin_key:
-        raise ApplyError(f"disable_plugin requires a plugin_key (finding {finding.id})")
+        raise ApplyError("internal error: disable_plugin action is missing the plugin key")
     settings_path = claude_home / "settings.json"
     if not settings_path.is_file():
         raise ApplyError(f"settings.json not found at {settings_path}")
@@ -344,15 +358,18 @@ def _primitive_disable_plugin(
             "prior_value": prior,
         },
     )
-    data = _load_json_config(settings_path, finding.id)
+    data = _load_json_config(settings_path)
     if not isinstance(data, dict):
-        raise ApplyError(f"settings.json root is not an object: {settings_path}")
+        raise ApplyError(
+            f"{settings_path} is not a JSON object — the file may be corrupt. "
+            f"Restore from backup or re-run Claude Code to regenerate it."
+        )
     plugins = data.get("enabledPlugins")
     if not isinstance(plugins, dict):
         plugins = {}
     plugins[plugin_key] = False
     data["enabledPlugins"] = plugins
-    _write_json_config(settings_path, data, finding.id)
+    _write_json_config(settings_path, data)
     return record
 
 
@@ -381,7 +398,7 @@ def _primitive_uninstall_plugin(
     action = finding.action
     plugin_key = action.plugin_key
     if not plugin_key:
-        raise ApplyError(f"uninstall_plugin requires a plugin_key (finding {finding.id})")
+        raise ApplyError("internal error: uninstall_plugin action is missing the plugin key")
     installed_path = claude_home / "plugins" / "installed_plugins.json"
     if not installed_path.is_file():
         raise ApplyError(f"installed_plugins.json not found at {installed_path}")
@@ -391,7 +408,7 @@ def _primitive_uninstall_plugin(
         action="uninstall_plugin",
         details={**action_snapshot_hint(action), "plugin_key": plugin_key},
     )
-    data: Any = _load_json_config(installed_path, finding.id)
+    data: Any = _load_json_config(installed_path)
     name = plugin_key.split("@", 1)[0] if "@" in plugin_key else plugin_key
     if isinstance(data, dict):
         plugins_field = data.get("plugins")
@@ -405,7 +422,7 @@ def _primitive_uninstall_plugin(
             data.pop(name, None)
     elif isinstance(data, list):
         data = [p for p in data if not (isinstance(p, dict) and p.get("name") == name)]
-    _write_json_config(installed_path, data, finding.id)
+    _write_json_config(installed_path, data)
 
     cache_dir = claude_home / "plugins" / "cache" / name
     # ``is_symlink()`` first: a plugin manager that symlinks the cache
@@ -448,7 +465,7 @@ def _primitive_remove_claude_md_section(
     action = finding.action
     if action.path is None or action.heading is None:
         raise ApplyError(
-            f"remove_claude_md_section requires path and heading (finding {finding.id})"
+            "internal error: remove_claude_md_section action is missing its path or heading"
         )
     target = action.path.expanduser()
     if not target.is_file():
@@ -459,29 +476,23 @@ def _primitive_remove_claude_md_section(
         action="remove_claude_md_section",
         details={**action_snapshot_hint(action), "heading": action.heading},
     )
-    new_text = _strip_section(_read_utf8(target, finding.id), action.heading)
-    _write_utf8(target, new_text, finding.id)
+    source_text = _read_utf8(target)
+    sections = parse_sections(source_text)
+    section = _find_section_by_heading(sections, action.heading)
+    if section is None:
+        # Surface the mismatch as a clean failure instead of writing the
+        # file unchanged and reporting success. The snapshot already
+        # captured the untouched file so the restore story is intact.
+        raise ApplyError(
+            f"section {action.heading!r} not found in {target} — the file "
+            f"may have been edited since the scan; re-run unclog and try again"
+        )
+    start = section.byte_offset
+    end = section.byte_offset + section.byte_length
+    encoded = source_text.encode("utf-8")
+    new_text = (encoded[:start] + encoded[end:]).decode("utf-8")
+    _write_utf8(target, new_text)
     return record
-
-
-def _strip_section(text: str, heading: str) -> str:
-    """Return ``text`` with the first section matching ``heading`` removed.
-
-    The section spans from its heading line up to (but not including)
-    the next heading of equal-or-lower level, matching
-    :func:`unclog.util.markdown.parse_sections`. If no section matches,
-    the text is returned unchanged — the caller will notice because
-    the byte count didn't shrink, but we don't raise: snapshot already
-    captured the original.
-    """
-    sections = parse_sections(text)
-    target = _find_section_by_heading(sections, heading)
-    if target is None:
-        return text
-    start = target.byte_offset
-    end = target.byte_offset + target.byte_length
-    encoded = text.encode("utf-8")
-    return (encoded[:start] + encoded[end:]).decode("utf-8")
 
 
 def _find_section_by_heading(sections: Sequence[Section], heading: str) -> Section | None:
@@ -497,7 +508,7 @@ def _primitive_remove_claude_md_lines(
     action = finding.action
     if action.path is None or not action.line_numbers:
         raise ApplyError(
-            f"remove_claude_md_lines requires path and line_numbers (finding {finding.id})"
+            "internal error: remove_claude_md_lines action is missing its path or line numbers"
         )
     target = action.path.expanduser()
     if not target.is_file():
@@ -512,9 +523,9 @@ def _primitive_remove_claude_md_lines(
         },
     )
     to_drop = set(action.line_numbers)
-    lines = _read_utf8(target, finding.id).splitlines(keepends=True)
+    lines = _read_utf8(target).splitlines(keepends=True)
     kept = [line for idx, line in enumerate(lines, start=1) if idx not in to_drop]
-    _write_utf8(target, "".join(kept), finding.id)
+    _write_utf8(target, "".join(kept))
     return record
 
 
@@ -531,21 +542,24 @@ def _primitive_move_claude_md_section(
     action = finding.action
     if action.path is None or action.heading is None:
         raise ApplyError(
-            f"move_claude_md_section requires path and heading (finding {finding.id})"
+            "internal error: move_claude_md_section action is missing its path or heading"
         )
     destination_raw = finding.evidence.get("destination_path") if finding.evidence else None
     if not isinstance(destination_raw, str):
         raise ApplyError(
-            f"move_claude_md_section missing evidence.destination_path (finding {finding.id})"
+            "internal error: move_claude_md_section action is missing its destination path"
         )
     source = action.path.expanduser()
     destination = Path(destination_raw).expanduser()
     if not source.is_file():
-        raise ApplyError(f"source CLAUDE.md not found: {source}")
-    source_text = _read_utf8(source, finding.id)
+        raise ApplyError(f"CLAUDE.md not found: {source}")
+    source_text = _read_utf8(source)
     section = _find_section_by_heading(parse_sections(source_text), action.heading)
     if section is None:
-        raise ApplyError(f"heading {action.heading!r} not found in {source}")
+        raise ApplyError(
+            f"section {action.heading!r} not found in {source} — the file "
+            f"may have been edited since the scan; re-run unclog and try again"
+        )
     # Capture source first; capture destination unconditionally so the
     # snapshot-path sandbox (_relative_snapshot_path → SnapshotError)
     # runs even when the destination doesn't exist yet. A tampered
@@ -580,14 +594,14 @@ def _primitive_move_claude_md_section(
     new_source = (
         encoded[: section.byte_offset] + encoded[section.byte_offset + section.byte_length :]
     ).decode("utf-8")
-    _write_utf8(source, new_source, finding.id)
+    _write_utf8(source, new_source)
     # 3. Append to destination (creating it if needed).
     destination.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_utf8(destination, finding.id) if destination.is_file() else ""
+    existing = _read_utf8(destination) if destination.is_file() else ""
     separator = "" if existing == "" or existing.endswith("\n\n") else (
         "\n" if existing.endswith("\n") else "\n\n"
     )
-    _write_utf8(destination, existing + separator + section_text, finding.id)
+    _write_utf8(destination, existing + separator + section_text)
     return record
 
 
@@ -620,16 +634,18 @@ def _primitive_open_in_editor(
     """
     action = finding.action
     if action.path is None:
-        raise ApplyError(f"open_in_editor requires a path (finding {finding.id})")
+        raise ApplyError("internal error: open_in_editor action is missing its target path")
     editor_env = os.environ.get("EDITOR") or os.environ.get("VISUAL")
     if not editor_env:
-        raise ApplyError("open_in_editor requires $EDITOR or $VISUAL to be set")
+        raise ApplyError(
+            "no editor configured — set $EDITOR (e.g. 'export EDITOR=vim') and try again"
+        )
     try:
         editor_argv = shlex.split(editor_env)
     except ValueError as exc:
-        raise ApplyError(f"$EDITOR could not be parsed: {editor_env!r}: {exc}") from exc
+        raise ApplyError(f"$EDITOR is malformed ({editor_env!r}): {exc}") from exc
     if not editor_argv:
-        raise ApplyError("$EDITOR is empty after parsing")
+        raise ApplyError("$EDITOR is empty — set it to an editor command and try again")
     editor_bin = Path(editor_argv[0]).name
     # If the user picked a GUI fork-return editor and didn't pass a wait
     # flag themselves, add one. Terminal editors (vim, nano, emacs,

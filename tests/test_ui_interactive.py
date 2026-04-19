@@ -331,3 +331,44 @@ def test_interactive_returns_none_when_no_findings_and_no_curate(tmp_path: Path)
         curate_findings=[],
     )
     assert result is None
+
+
+# -- RichPrompter.confirm semantics (Fix #8) --------------------------------
+
+
+def test_rich_prompter_confirm_rereaises_keyboard_interrupt(monkeypatch: object) -> None:
+    """Regression (Fix #8): Ctrl+C at the confirm prompt must propagate.
+
+    The previous implementation caught ``KeyboardInterrupt`` alongside
+    ``EOFError`` and silently returned False, degrading a user-initiated
+    cancel into a "No" answer. The CLI's top-level handler renders a
+    clean ``Cancelled.`` message only if the interrupt reaches it.
+    """
+    import builtins
+
+    import pytest
+
+    from unclog.ui.interactive import RichPrompter
+
+    def _raise_kbi(_prompt: str) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(builtins, "input", _raise_kbi)  # type: ignore[attr-defined]
+    prompter = RichPrompter(Console(record=True))
+    with pytest.raises(KeyboardInterrupt):
+        prompter.confirm("Apply?", default=False)
+
+
+def test_rich_prompter_confirm_returns_false_on_eof(monkeypatch: object) -> None:
+    """EOFError (pipe closed / no TTY) still defaults to No, no traceback."""
+    import builtins
+
+    from unclog.ui.interactive import RichPrompter
+
+    def _raise_eof(_prompt: str) -> str:
+        raise EOFError
+
+    monkeypatch.setattr(builtins, "input", _raise_eof)  # type: ignore[attr-defined]
+    prompter = RichPrompter(Console(record=True))
+    assert prompter.confirm("Apply?", default=True) is False
+    assert prompter.confirm("Apply?", default=False) is False

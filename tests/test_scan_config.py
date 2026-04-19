@@ -146,6 +146,35 @@ def test_load_settings_raises_on_malformed_json(tmp_path: Path) -> None:
         load_settings(settings_path)
 
 
+def test_load_claude_config_raises_config_parse_error_on_permission_denied(
+    tmp_path: Path,
+) -> None:
+    """Regression (Fix #3): PermissionError must surface as ConfigParseError.
+
+    Before the fix, an unreadable ``~/.claude.json`` escaped as a raw
+    ``OSError`` and tripped the CLI's unexpected-error path ("please
+    file a bug report"). It's a filesystem condition, not a bug —
+    should be a typed error the CLI renders with a clean message.
+    """
+    import os
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("chmod semantics differ on Windows")
+    cfg_path = tmp_path / ".claude.json"
+    cfg_path.write_text("{}", encoding="utf-8")
+    cfg_path.chmod(0o000)
+    try:
+        if os.geteuid() == 0:
+            pytest.skip("root bypasses file mode permissions")
+        with pytest.raises(ConfigParseError) as excinfo:
+            load_claude_config(cfg_path)
+        assert excinfo.value.path == cfg_path
+    finally:
+        # Restore so the tmp_path can be cleaned up.
+        cfg_path.chmod(0o600)
+
+
 def test_load_settings_parses_nested_hooks(tmp_path: Path) -> None:
     settings_path = tmp_path / "settings.json"
     _write_json(

@@ -16,7 +16,13 @@ from types import MappingProxyType
 
 
 class ConfigParseError(RuntimeError):
-    """Raised when a config file exists but cannot be parsed as JSON."""
+    """Raised when a config file exists but cannot be read or parsed.
+
+    Covers both content problems (invalid JSON) and access problems
+    (permission denied, transient I/O error). The CLI catches this
+    class explicitly so these user-environment issues don't surface
+    as "unexpected error → please file a bug report".
+    """
 
     def __init__(self, path: Path, cause: Exception) -> None:
         super().__init__(f"Could not parse {path}: {cause}")
@@ -92,6 +98,11 @@ def _read_json(path: Path) -> object | None:
         with path.open("r", encoding="utf-8") as f:
             data: object = json.load(f)
     except json.JSONDecodeError as exc:
+        raise ConfigParseError(path, exc) from exc
+    except OSError as exc:
+        # PermissionError, transient I/O, FS-level weirdness. Surfacing
+        # these as ConfigParseError lets the CLI render a clean message
+        # naming the file, instead of the generic unexpected-error path.
         raise ConfigParseError(path, exc) from exc
     return data
 

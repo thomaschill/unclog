@@ -1,20 +1,16 @@
-"""Promote MCP probe failures from hero-line footnotes to real findings.
+"""Informational fallback for MCP probes that have no declaring config.
 
-When ``--probe-mcps`` (default in v0.1) spawns a declared MCP server
-and the server fails to start — command not on PATH, crashes during
-the JSON-RPC handshake, times out — we previously surfaced the count
-as a ``"N MCP unmeasured"`` note in the hero line. That was dense
-jargon that didn't tell the user which server was broken or what to
-do about it.
+``dead_mcp`` is the primary detector for failed probes: every failed
+probe of a *declared* server becomes a ``dead_mcp`` finding with an
+actionable ``comment_out_mcp`` primitive. This detector covers the
+remaining edge case — a probe entry for a server that no longer
+appears in ``.claude.json`` or any project config (e.g. the server
+was removed between scan steps, or the probe map and config view
+diverge in some future layout).
 
-This detector reads ``state.global_scope.mcp_probes`` (populated by
-:mod:`unclog.scan.mcp_probe`) and emits one informational finding per
-failed probe so the user sees a concrete ``MCP 'X' failed to start``
-row in the findings summary, with the truncated stderr in ``evidence``
-for ``--json`` consumers.
-
-Flag-only (spec §6.1): we can't auto-fix a broken server config. The
-user needs to check the command, the env, or reinstall the server.
+Flag-only: with no declaring config to edit, there's nothing to
+auto-fix. The user has to clean up whatever state carries the
+orphan entry.
 """
 
 from __future__ import annotations
@@ -27,6 +23,21 @@ from unclog.scan.stats import ActivityIndex
 from unclog.state import InstallationState
 
 
+def _all_declared_server_names(state: InstallationState) -> set[str]:
+    """Return every server name Claude Code config declares.
+
+    Mirrors ``dead_mcp._all_declared_servers`` but returns just the set
+    of names — we only care whether dead_mcp will own the finding.
+    """
+    config = state.global_scope.config
+    if config is None:
+        return set()
+    names: set[str] = set(config.mcp_servers)
+    for project in config.projects.values():
+        names.update(project.mcp_servers)
+    return names
+
+
 def detect(
     state: InstallationState,
     activity: ActivityIndex,
@@ -34,21 +45,32 @@ def detect(
     *,
     now: datetime,
 ) -> list[Finding]:
+    del activity, thresholds, now  # signature parity with other detectors
+
     probes = state.global_scope.mcp_probes
     if not probes:
         return []
+
+    # dead_mcp already emits an actionable finding for every failed
+    # probe of a *declared* server; duplicating it here would produce
+    # two rows per failure with the same title, inflating the summary
+    # count and confusing the picker. Only cover probes with no
+    # declaring config (orphans).
+    declared = _all_declared_server_names(state)
 
     findings: list[Finding] = []
     for name in sorted(probes):
         probe = probes[name]
         if probe.ok:
             continue
+        if name in declared:
+            continue
         error = probe.error or "probe failed"
         findings.append(
             Finding(
                 id=f"failed_mcp_probe:{name}",
                 type="failed_mcp_probe",
-                title=f"MCP {name!r} failed to start",
+                title=f"MCP {name!r} failed to start (orphan probe entry)",
                 reason=error,
                 scope=Scope(kind="global"),
                 action=Action(primitive="flag_only", server_name=name),
