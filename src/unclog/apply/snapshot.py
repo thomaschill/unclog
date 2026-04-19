@@ -106,6 +106,15 @@ class Snapshot:
     claude_home: Path
     project_paths: tuple[Path, ...]
     actions: list[SnapshotAction] = field(default_factory=list)
+    # Tracks which snapshot-relative paths have already had bytes copied
+    # this run. Second and subsequent captures of the same path are
+    # recorded as actions (so reverse-order restore still replays them)
+    # but don't re-copy — preserving the first-capture bytes, which are
+    # the true pre-apply state. Without this, a multi-action batch
+    # touching the same file (e.g. two disable_plugin on settings.json)
+    # leaves the snapshot holding post-first-mutation bytes and a
+    # subsequent restore can't reach the true original.
+    _captured_rels: set[str] = field(default_factory=set, repr=False)
 
     @property
     def files_root(self) -> Path:
@@ -129,9 +138,16 @@ class Snapshot:
         the post-apply artefact if the capture didn't produce one.
         """
         rel = _relative_snapshot_path(original, self.claude_home, self.project_paths)
+        rel_key = str(rel)
         snap_path = self.files_root / rel
         snap_path.parent.mkdir(parents=True, exist_ok=True)
-        if original.is_symlink():
+        # Second+ capture of the same path: skip the copy so the
+        # first-capture bytes (true pre-apply state) are preserved. Still
+        # append an action record below so reverse-order restore replays
+        # this pointer.
+        if rel_key in self._captured_rels:
+            pass
+        elif original.is_symlink():
             # Preserve the pointer itself. ``is_dir()``/``is_file()``
             # dereference symlinks, so without this branch a symlink to
             # a large directory would be copied as a full tree — wrong
@@ -140,12 +156,20 @@ class Snapshot:
             if snap_path.is_symlink() or snap_path.exists():
                 snap_path.unlink()
             shutil.copy2(original, snap_path, follow_symlinks=False)
+            self._captured_rels.add(rel_key)
         elif original.is_dir():
             if snap_path.exists():
                 shutil.rmtree(snap_path)
             shutil.copytree(original, snap_path, symlinks=True)
+            self._captured_rels.add(rel_key)
         elif original.is_file():
             shutil.copy2(original, snap_path)
+            self._captured_rels.add(rel_key)
+        else:
+            # Missing original: mark as captured so a later sibling
+            # capture of the same path (now written by an earlier action)
+            # doesn't shadow the "absent" signal restore relies on.
+            self._captured_rels.add(rel_key)
         # If the original doesn't exist, we still record the intent so
         # restore knows to delete the post-apply file. ``snap_path`` will
         # simply not exist — restore treats that as "remove target".

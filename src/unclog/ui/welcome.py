@@ -11,7 +11,7 @@ and derives everything it needs. The caller decides where to print it.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from rich.console import Group, RenderableType
@@ -22,7 +22,6 @@ from unclog import __version__
 from unclog.state import InstallationState
 from unclog.ui.chrome import rounded_panel
 from unclog.ui.theme import ACCENT, DIM
-
 
 # Short list chosen to surface the non-obvious safety properties and
 # the escape hatch for automation. Three items is the limit — more
@@ -101,7 +100,7 @@ def _format_session_mtime(session_path: Path) -> str:
         mtime = session_path.stat().st_mtime
     except OSError:
         return "unknown"
-    return datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+    return datetime.fromtimestamp(mtime, tz=UTC).strftime("%Y-%m-%d")
 
 
 def _tips_block() -> Table:

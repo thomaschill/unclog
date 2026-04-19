@@ -23,7 +23,6 @@ from rich.text import Text
 
 from unclog.ui.theme import ACCENT, DIM, SEVERITY_BAD, SEVERITY_OK
 
-
 # Default panel padding — one row top/bottom, two columns left/right.
 # Mirrors Claude Code's "breathe-able" interior; tighter padding makes
 # the rounded corners feel cramped.
@@ -127,8 +126,8 @@ def section_rule(label: str, *, accent: str = ACCENT) -> Rule:
 
 
 __all__ = [
-    "rounded_panel",
     "hint_bar",
-    "status_glyph",
+    "rounded_panel",
     "section_rule",
+    "status_glyph",
 ]

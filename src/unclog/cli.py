@@ -272,17 +272,24 @@ def restore(
             raise typer.Exit(code=1) from exc
 
         result = restore_snapshot(snapshot)
-        console.print(
-            f"[#22c55e]\u2713[/#22c55e] Restored snapshot [bold]{snapshot.id}[/bold] "
-            f"({len(result.restored)} action(s))"
-        )
         if result.failed:
+            # Lead with the failure so the green ✓ doesn't hide the
+            # partial state — users skim output and can miss a secondary
+            # block underneath a success line.
+            console.print(
+                f"[#eab308]![/#eab308] Partially restored snapshot [bold]{snapshot.id}[/bold] "
+                f"[dim]({len(result.restored)} ok, {len(result.failed)} failed)[/dim]"
+            )
             console.print(
                 f"[#ef4444]! {len(result.failed)} action(s) could not be restored:[/#ef4444]"
             )
             for action, reason in result.failed:
                 console.print(f"  [dim]- {action.original_path}: {reason}[/dim]")
             raise typer.Exit(code=1)
+        console.print(
+            f"[#22c55e]\u2713[/#22c55e] Restored snapshot [bold]{snapshot.id}[/bold] "
+            f"({len(result.restored)} action(s))"
+        )
     except (typer.Exit, typer.Abort, typer.BadParameter, KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:

@@ -172,6 +172,12 @@ def _primitive_comment_out_mcp(
     spec §6.1 are realised by renaming the key to
     ``__unclog_disabled__<name>`` inside ``mcpServers``. Restore simply
     copies the snapshot bytes back, so the original key returns verbatim.
+
+    Handles both scopes:
+    - global: edits ``mcpServers`` at the root of ``.claude.json``.
+    - project: edits ``projects[<abs-path>].mcpServers`` for the exact
+      project the finding is scoped to (detectors set
+      ``finding.scope.project_path`` when the server lives there).
     """
     action = finding.action
     name = action.server_name
@@ -189,20 +195,105 @@ def _primitive_comment_out_mcp(
     data = _load_json_config(config_path, finding.id)
     if not isinstance(data, dict):
         raise ApplyError(f".claude.json root is not an object: {config_path}")
-    servers = data.get("mcpServers")
-    if not isinstance(servers, dict) or name not in servers:
-        raise ApplyError(f"MCP server {name!r} not present in {config_path}")
+
+    servers_container, container_label = _locate_mcp_servers(data, finding, config_path)
+    if name not in servers_container:
+        raise ApplyError(f"MCP server {name!r} not present in {container_label}")
     disabled_key = f"{_MCP_MARKER}{name}"
     # Preserve insertion order by rebuilding the dict key-by-key.
     new_servers: dict[str, Any] = {}
-    for key, value in servers.items():
+    for key, value in servers_container.items():
         if key == name:
             new_servers[disabled_key] = value
         else:
             new_servers[key] = value
-    data["mcpServers"] = new_servers
+    # Write back into the container's parent (global root or project record).
+    _replace_mcp_servers(data, finding, new_servers)
     _write_json_config(config_path, data, finding.id)
     return record
+
+
+def _locate_mcp_servers(
+    data: dict[str, Any], finding: Finding, config_path: Path
+) -> tuple[dict[str, Any], str]:
+    """Return the ``mcpServers`` dict the finding targets, plus a human label.
+
+    Raises :class:`ApplyError` if the expected container is absent or
+    malformed — e.g. a project-scoped finding whose project key was
+    removed from ``.claude.json`` between scan and apply.
+    """
+    scope = finding.scope
+    if scope.kind == "project" and scope.project_path is not None:
+        projects = data.get("projects")
+        if not isinstance(projects, dict):
+            raise ApplyError(
+                f"projects section missing or malformed in {config_path} "
+                f"(finding {finding.id})"
+            )
+        project_key = _match_project_key(projects, scope.project_path)
+        if project_key is None:
+            raise ApplyError(
+                f"project {scope.project_path} not present in {config_path} "
+                f"(finding {finding.id})"
+            )
+        project_record = projects[project_key]
+        if not isinstance(project_record, dict):
+            raise ApplyError(
+                f"project record for {project_key!r} is not an object in {config_path}"
+            )
+        servers = project_record.get("mcpServers")
+        if not isinstance(servers, dict):
+            raise ApplyError(
+                f"projects.{project_key!r}.mcpServers missing or malformed "
+                f"in {config_path}"
+            )
+        return servers, f"projects.{project_key!r}.mcpServers"
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        raise ApplyError(f"mcpServers missing or malformed in {config_path}")
+    return servers, f"{config_path}:mcpServers"
+
+
+def _replace_mcp_servers(
+    data: dict[str, Any], finding: Finding, new_servers: dict[str, Any]
+) -> None:
+    """Write ``new_servers`` back into the same container `_locate_mcp_servers` read from."""
+    scope = finding.scope
+    if scope.kind == "project" and scope.project_path is not None:
+        projects = data["projects"]
+        project_key = _match_project_key(projects, scope.project_path)
+        # _locate already validated; re-derive to mutate.
+        assert project_key is not None
+        projects[project_key]["mcpServers"] = new_servers
+        return
+    data["mcpServers"] = new_servers
+
+
+def _match_project_key(projects: dict[str, Any], target: Path) -> str | None:
+    """Match ``target`` against a key in ``projects`` tolerantly.
+
+    Config keys are whatever strings the user's Claude Code wrote —
+    usually absolute paths, but not guaranteed to be resolved the same
+    way Python resolves them (``/tmp`` vs ``/private/tmp`` on macOS,
+    trailing slashes, ``~`` expansion). Try exact match first, then
+    compare resolved paths, so a scan-vs-apply divergence in how we
+    represent the path doesn't break the lookup.
+    """
+    target_str = str(target)
+    if target_str in projects:
+        return target_str
+    try:
+        target_resolved = target.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        target_resolved = target
+    for key in projects:
+        try:
+            candidate = Path(key).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError):
+            continue
+        if candidate == target_resolved:
+            return key
+    return None
 
 
 def _resolve_claude_json(claude_home: Path) -> Path:
@@ -455,7 +546,12 @@ def _primitive_move_claude_md_section(
     section = _find_section_by_heading(parse_sections(source_text), action.heading)
     if section is None:
         raise ApplyError(f"heading {action.heading!r} not found in {source}")
-    # Capture source first; destination gets captured below (it may not exist yet).
+    # Capture source first; capture destination unconditionally so the
+    # snapshot-path sandbox (_relative_snapshot_path → SnapshotError)
+    # runs even when the destination doesn't exist yet. A tampered
+    # finding with destination_path pointing outside claude_home +
+    # project_paths will be refused here instead of silently writing
+    # a file restore can't clean up.
     record = snapshot.capture_file(
         source,
         finding.id,
@@ -466,13 +562,16 @@ def _primitive_move_claude_md_section(
             "destination_path": str(destination),
         },
     )
-    if destination.is_file():
-        snapshot.capture_file(
-            destination,
-            finding.id,
-            action="move_claude_md_section:destination",
-            details={"heading": action.heading, "role": "destination"},
-        )
+    # Always capture the destination — capture_file handles missing
+    # originals by recording an "absent" action (restore removes the
+    # post-apply file). Present destinations get their bytes captured so
+    # restore can rewrite them.
+    snapshot.capture_file(
+        destination,
+        finding.id,
+        action="move_claude_md_section:destination",
+        details={"heading": action.heading, "role": "destination"},
+    )
     # 1. Extract section body bytes before stripping.
     encoded = source_text.encode("utf-8")
     section_bytes = encoded[section.byte_offset : section.byte_offset + section.byte_length]

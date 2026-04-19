@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from rich.console import Console, RenderableType
+from rich.console import Console
 from rich.text import Text
 
 from unclog import __version__
@@ -1001,7 +1001,10 @@ def _render_also_running(
         count = invocations.get(name, 0)
         if count <= 0:
             continue
-        mcp_rows.append((name, count, probe.tools_tokens))
+        tokens = probe.tools_tokens
+        if tokens is None:
+            continue
+        mcp_rows.append((name, count, tokens))
     mcp_rows.sort(key=lambda r: (-r[1], r[0]))
 
     # Hooks: anything flagged as heavy_hook is already in the findings

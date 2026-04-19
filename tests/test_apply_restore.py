@@ -345,3 +345,44 @@ def test_restore_refuses_dotdot_snapshot_path(tmp_path: Path) -> None:
     assert not result.restored
     assert len(result.failed) == 1
     assert "outside files/" in result.failed[0][1]
+
+
+def test_restore_two_plugins_returns_to_true_original(tmp_path: Path) -> None:
+    """Fix B round-trip: disabling two plugins and restoring must undo both.
+
+    Before the capture_file dedupe, the second action's capture
+    overwrote the first with post-first-mutation bytes. Reverse-order
+    restore then reached "after plugin A disabled" as the best state,
+    leaving plugin A permanently disabled even after a user ran
+    ``unclog restore``.
+    """
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    settings = claude_home / "settings.json"
+    original = {"enabledPlugins": {"a@m": True, "b@m": True}}
+    settings.write_text(json.dumps(original), encoding="utf-8")
+
+    snapshots_dir = tmp_path / "snapshots"
+    findings = [
+        _finding(fid="stale_plugin:a", type_="stale_plugin",
+                 primitive="disable_plugin", plugin_key="a@m"),
+        _finding(fid="stale_plugin:b", type_="stale_plugin",
+                 primitive="disable_plugin", plugin_key="b@m"),
+    ]
+    result = apply_findings(
+        findings,
+        claude_home=claude_home,
+        snapshots_dir=snapshots_dir,
+        now=NOW,
+    )
+    assert len(result.succeeded) == 2
+    # Both disabled post-apply.
+    live = json.loads(settings.read_text(encoding="utf-8"))
+    assert live["enabledPlugins"] == {"a@m": False, "b@m": False}
+
+    # Now restore — must return to TRUE original (both enabled).
+    snap = load_snapshot(snapshots_dir, result.snapshot.id)
+    restore = restore_snapshot(snap)
+    assert not restore.failed
+    final = json.loads(settings.read_text(encoding="utf-8"))
+    assert final == original

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from rich.console import Console, Group
+from rich.console import Console, Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 
@@ -446,7 +446,7 @@ def _render_result(result: ApplyResult, console: Console) -> None:
     semantics (success vs failure) — kept.
     """
     console.print("")
-    blocks: list[object] = []
+    blocks: list[RenderableType] = []
 
     summary = Text()
     summary.append(f"{len(result.succeeded)}", style=f"bold {SEVERITY_OK}")
@@ -474,7 +474,7 @@ def _render_result(result: ApplyResult, console: Console) -> None:
     if result.failed:
         blocks.append(Text(""))
         fail_header = Text()
-        fail_header.append("! ", style=f"bold #eab308")
+        fail_header.append("! ", style="bold #eab308")
         fail_header.append(f"{len(result.failed)} action(s) failed", style=SEVERITY_BAD)
         blocks.append(fail_header)
         for finding, reason in result.failed:
@@ -484,6 +484,20 @@ def _render_result(result: ApplyResult, console: Console) -> None:
             row.append(finding.title, style="default")
             row.append(f"  — {reason}", style=DIM)
             blocks.append(row)
+
+    # Persist error is rare but data-loss-by-surprise if hidden: a
+    # manifest that didn't land means ``unclog restore <id>`` can't find
+    # the snapshot. Tell the user immediately so they don't rely on undo.
+    if result.persist_error:
+        blocks.append(Text(""))
+        warn = Text()
+        warn.append("! ", style="bold #eab308")
+        warn.append("snapshot manifest failed to persist", style=SEVERITY_BAD)
+        warn.append(
+            f"  — {result.persist_error}. Undo for this batch may not work.",
+            style=DIM,
+        )
+        blocks.append(warn)
 
     blocks.append(Text(""))
     meta = Table.grid(padding=(0, 2))
@@ -496,12 +510,15 @@ def _render_result(result: ApplyResult, console: Console) -> None:
     )
     blocks.append(meta)
 
-    # Title: glyph carries the headline. ⏺ on success, ! on partial
-    # failure. Border colour still encodes state for at-a-glance scan.
-    if result.failed:
+    # Title: glyph carries the headline. ⏺ on clean success, ! on any
+    # degradation (action failure or manifest-persist failure). Border
+    # colour still encodes state for at-a-glance scan.
+    degraded = bool(result.failed) or bool(result.persist_error)
+    if degraded:
         title = Text()
         title.append_text(status_glyph("attention"))
-        title.append("Applied with failures", style=f"bold {ACCENT}")
+        label = "Applied with failures" if result.failed else "Applied (undo at risk)"
+        title.append(label, style=f"bold {ACCENT}")
         border = SEVERITY_BAD
     else:
         title = Text()
@@ -527,7 +544,7 @@ def _render_informational_next_steps(
     ``!`` amber glyph on the title, ``⎿`` connectors for each row.
     """
     console.print("")
-    blocks: list[object] = []
+    blocks: list[RenderableType] = []
 
     header = Text()
     header.append("No auto-fixable issues.", style="bold")

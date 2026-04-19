@@ -34,13 +34,14 @@ def _finding(
     plugin_key: str | None = None,
     line_numbers: tuple[int, ...] = (),
     evidence: dict[str, object] | None = None,
+    scope: Scope | None = None,
 ) -> Finding:
     return Finding(
         id=fid,
         type=type_,  # type: ignore[arg-type]
         title="t",
         reason="r",
-        scope=Scope(kind="global"),
+        scope=scope if scope is not None else Scope(kind="global"),
         action=Action(
             primitive=primitive,  # type: ignore[arg-type]
             path=path,
@@ -479,3 +480,149 @@ def test_open_in_editor_adds_wait_for_gui_editor(
     )
     apply_action(finding, snap, claude_home=claude_home)
     assert "--wait" in captured[0]
+
+
+# -- project-scoped comment_out_mcp ----------------------------------------
+
+
+def test_comment_out_mcp_renames_project_scoped_server(tmp_path: Path) -> None:
+    """Fix A: project-scoped MCP finding edits projects.<abs>.mcpServers, not root."""
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    project = tmp_path / "myproj"
+    project.mkdir()
+    config_path = claude_home / ".claude.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {"global_only": {"command": "g"}},
+                "projects": {
+                    str(project): {
+                        "mcpServers": {
+                            "proj_mcp": {"command": "p"},
+                            "other": {"command": "o"},
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    snap = _snapshot(tmp_path, claude_home, project_paths=(project,))
+    finding = _finding(
+        fid="unused_mcp:proj_mcp",
+        type_="unused_mcp",
+        primitive="comment_out_mcp",
+        server_name="proj_mcp",
+        scope=Scope(kind="project", project_path=project),
+    )
+    apply_action(finding, snap, claude_home=claude_home)
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    # Global section must be untouched — this is the regression.
+    assert data["mcpServers"] == {"global_only": {"command": "g"}}
+    proj_servers = data["projects"][str(project)]["mcpServers"]
+    assert "proj_mcp" not in proj_servers
+    assert "__unclog_disabled__proj_mcp" in proj_servers
+    assert proj_servers["other"] == {"command": "o"}
+
+
+def test_comment_out_mcp_errors_when_project_missing_from_config(tmp_path: Path) -> None:
+    """Project-scoped finding must fail cleanly if the key has been removed."""
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    project = tmp_path / "gone"
+    project.mkdir()
+    config_path = claude_home / ".claude.json"
+    config_path.write_text(
+        json.dumps({"mcpServers": {}, "projects": {}}),
+        encoding="utf-8",
+    )
+    snap = _snapshot(tmp_path, claude_home, project_paths=(project,))
+    finding = _finding(
+        fid="unused_mcp:ghost",
+        type_="unused_mcp",
+        primitive="comment_out_mcp",
+        server_name="ghost",
+        scope=Scope(kind="project", project_path=project),
+    )
+    with pytest.raises(ApplyError, match="not present"):
+        apply_action(finding, snap, claude_home=claude_home)
+
+
+# -- capture_file dedupe ----------------------------------------------------
+
+
+def test_two_disable_plugin_actions_preserve_true_original(tmp_path: Path) -> None:
+    """Fix B: two captures of settings.json keep first-capture bytes.
+
+    Two disable_plugin actions both capture settings.json. Before the
+    fix, the second capture overwrote the first with post-first-mutation
+    bytes, so restore could only reach "after plugin A was disabled"
+    state, not the true original "both enabled" state.
+    """
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    settings = claude_home / "settings.json"
+    original = {"enabledPlugins": {"a@m": True, "b@m": True}}
+    settings.write_text(json.dumps(original), encoding="utf-8")
+    snap = _snapshot(tmp_path, claude_home)
+
+    f1 = _finding(
+        fid="stale_plugin:a",
+        type_="stale_plugin",
+        primitive="disable_plugin",
+        plugin_key="a@m",
+    )
+    f2 = _finding(
+        fid="stale_plugin:b",
+        type_="stale_plugin",
+        primitive="disable_plugin",
+        plugin_key="b@m",
+    )
+    apply_action(f1, snap, claude_home=claude_home)
+    apply_action(f2, snap, claude_home=claude_home)
+
+    # After both actions, live file has both disabled — that's expected.
+    live = json.loads(settings.read_text(encoding="utf-8"))
+    assert live["enabledPlugins"] == {"a@m": False, "b@m": False}
+
+    # The snapshot copy must still hold the true original (both True).
+    rel = snap.actions[0].snapshot_path
+    snap_bytes = (snap.files_root / rel).read_text(encoding="utf-8")
+    assert json.loads(snap_bytes) == original
+
+
+# -- move_claude_md_section destination sandbox -----------------------------
+
+
+def test_move_claude_md_section_refuses_external_destination(tmp_path: Path) -> None:
+    """Fix C: destination outside capture roots is refused before writing.
+
+    A tampered finding whose evidence.destination_path points outside
+    claude_home + project_paths used to write a file restore couldn't
+    clean up (no action record existed for it). Capture is now called
+    unconditionally; _relative_snapshot_path raises SnapshotError.
+    """
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    project = tmp_path / "proj"
+    project.mkdir()
+    source = project / "CLAUDE.md"
+    source.write_text("# Heading X\n\nbody\n", encoding="utf-8")
+
+    external_destination = tmp_path / "outside" / "hijack.md"
+    snap = _snapshot(tmp_path, claude_home, project_paths=(project,))
+    finding = _finding(
+        fid="scope_mismatch:x",
+        type_="scope_mismatch_project_to_global",
+        primitive="move_claude_md_section",
+        path=source,
+        heading="Heading X",
+        evidence={"destination_path": str(external_destination)},
+    )
+    with pytest.raises(Exception, match="outside claude_home"):
+        apply_action(finding, snap, claude_home=claude_home)
+    # External file must not have been created.
+    assert not external_destination.exists()
+    # Source must be untouched (capture_file raised before strip).
+    assert source.read_text(encoding="utf-8") == "# Heading X\n\nbody\n"
