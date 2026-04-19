@@ -410,9 +410,101 @@ def _primitive_uninstall_plugin(
     )
     data: Any = _load_json_config(installed_path)
     name = plugin_key.split("@", 1)[0] if "@" in plugin_key else plugin_key
+    # Collect installPaths BEFORE mutating the JSON — once the record is
+    # gone we have no way to locate the actual cache dir, which Claude
+    # Code v2 nests as cache/<marketplace>/<name>/<version>/ rather than
+    # the legacy cache/<name>/ layout.
+    install_paths = _collect_install_paths(data, plugin_key, name)
+    _remove_plugin_from_installed(data, plugin_key, name)
+    _write_json_config(installed_path, data)
+
+    # Bottom-up: each installPath is cache/<marketplace>/<name>/<version>.
+    # Removing the parent (plugin-name dir) cleans every version at once.
+    # Sibling plugins under the same marketplace are untouched because
+    # we stop one level above <version>, not at the marketplace dir.
+    cache_roots: list[Path] = []
+    seen: set[Path] = set()
+    for install_path in install_paths:
+        plugin_name_dir = install_path.parent
+        if plugin_name_dir in seen:
+            continue
+        seen.add(plugin_name_dir)
+        cache_roots.append(plugin_name_dir)
+    # Legacy fallback: plugins that predate the marketplace-scoped layout
+    # live at cache/<name>/ directly. Only consider it if the new path
+    # wasn't already captured so we don't double-capture.
+    legacy = claude_home / "plugins" / "cache" / name
+    if legacy not in seen and (legacy.exists() or legacy.is_symlink()):
+        cache_roots.append(legacy)
+
+    for cache_dir in cache_roots:
+        _remove_plugin_cache_dir(cache_dir, snapshot, finding.id, plugin_key)
+    return record
+
+
+def _collect_install_paths(data: Any, plugin_key: str, name: str) -> list[Path]:
+    """Walk every known ``installed_plugins.json`` layout for installPaths.
+
+    Handles three shapes:
+    - v2 dict: ``{"plugins": {"<name>@<marketplace>": [{install}, ...]}}``
+    - v1 list: ``{"plugins": [{"name": ..., "installPath": ...}, ...]}``
+    - historical root-dict: ``{"<name>": {install}}``
+    """
+    install_paths: list[Path] = []
     if isinstance(data, dict):
         plugins_field = data.get("plugins")
-        if isinstance(plugins_field, list):
+        if isinstance(plugins_field, dict):
+            matching_keys = [
+                k
+                for k in plugins_field
+                if k == plugin_key or k.split("@", 1)[0] == name
+            ]
+            for key in matching_keys:
+                installs = plugins_field[key]
+                installs = installs if isinstance(installs, list) else [installs]
+                for install in installs:
+                    if isinstance(install, dict):
+                        ip = install.get("installPath")
+                        if isinstance(ip, str):
+                            install_paths.append(Path(ip))
+        elif isinstance(plugins_field, list):
+            for entry in plugins_field:
+                if isinstance(entry, dict) and entry.get("name") == name:
+                    ip = entry.get("installPath")
+                    if isinstance(ip, str):
+                        install_paths.append(Path(ip))
+        elif name in data and isinstance(data[name], dict):
+            ip = data[name].get("installPath")
+            if isinstance(ip, str):
+                install_paths.append(Path(ip))
+    elif isinstance(data, list):
+        for entry in data:
+            if isinstance(entry, dict) and entry.get("name") == name:
+                ip = entry.get("installPath")
+                if isinstance(ip, str):
+                    install_paths.append(Path(ip))
+    return install_paths
+
+
+def _remove_plugin_from_installed(data: Any, plugin_key: str, name: str) -> None:
+    """Strip every matching entry for ``plugin_key`` / ``name`` from ``data``.
+
+    Mutates ``data`` in place for the dict layouts; the caller is
+    responsible for writing the result back (the list-at-root layout
+    can't be mutated in place, but unclog never shipped with that
+    layout so the primitive doesn't support round-tripping it).
+    """
+    if isinstance(data, dict):
+        plugins_field = data.get("plugins")
+        if isinstance(plugins_field, dict):
+            matching_keys = [
+                k
+                for k in list(plugins_field)
+                if k == plugin_key or k.split("@", 1)[0] == name
+            ]
+            for key in matching_keys:
+                plugins_field.pop(key, None)
+        elif isinstance(plugins_field, list):
             data["plugins"] = [
                 p
                 for p in plugins_field
@@ -420,11 +512,12 @@ def _primitive_uninstall_plugin(
             ]
         elif name in data:
             data.pop(name, None)
-    elif isinstance(data, list):
-        data = [p for p in data if not (isinstance(p, dict) and p.get("name") == name)]
-    _write_json_config(installed_path, data)
 
-    cache_dir = claude_home / "plugins" / "cache" / name
+
+def _remove_plugin_cache_dir(
+    cache_dir: Path, snapshot: Snapshot, finding_id: str, plugin_key: str
+) -> None:
+    """Capture + remove one plugin cache directory or symlink."""
     # ``is_symlink()`` first: a plugin manager that symlinks the cache
     # into a shared location would crash ``rmtree`` (same class of bug
     # as the 166-skill symlink incident). Capture the link as a link
@@ -432,7 +525,7 @@ def _primitive_uninstall_plugin(
     if cache_dir.is_symlink():
         snapshot.capture_file(
             cache_dir,
-            finding.id,
+            finding_id,
             action="uninstall_plugin:cache",
             details={"plugin_key": plugin_key, "symlink": True},
         )
@@ -443,7 +536,7 @@ def _primitive_uninstall_plugin(
     elif cache_dir.is_dir():
         snapshot.capture_file(
             cache_dir,
-            finding.id,
+            finding_id,
             action="uninstall_plugin:cache",
             details={"plugin_key": plugin_key},
         )
@@ -451,7 +544,6 @@ def _primitive_uninstall_plugin(
             shutil.rmtree(cache_dir)
         except OSError as exc:
             raise ApplyError(f"could not remove plugin cache {cache_dir}: {exc}") from exc
-    return record
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +706,42 @@ _FORK_RETURN_EDITORS: frozenset[str] = frozenset(
     {"code", "code-insiders", "cursor", "windsurf", "subl", "mate", "atom"}
 )
 _WAIT_FLAGS: frozenset[str] = frozenset({"--wait", "-w", "-W"})
+# macOS and most Linux distros ship at least one of these. Tried in order
+# when neither $EDITOR nor $VISUAL is set — nano first because it's the
+# friendliest for users who don't already know vim.
+_DEFAULT_EDITOR_FALLBACKS: tuple[str, ...] = ("nano", "vim", "vi")
+
+
+def _resolve_editor_argv() -> tuple[list[str], str]:
+    """Return ``(argv, source_label)`` for the editor to spawn.
+
+    Preference order: ``$EDITOR``, ``$VISUAL``, then the first entry in
+    :data:`_DEFAULT_EDITOR_FALLBACKS` present on ``PATH``. The fallback
+    exists because fresh macOS shells commonly have neither env var set,
+    and failing an apply the user already confirmed feels like a
+    papercut — all three defaults ship with macOS and every mainstream
+    Linux distro by default.
+
+    Raises :class:`ApplyError` only if every option is unavailable
+    (extremely rare: a stripped-down container with no terminal editor).
+    """
+    editor_env = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if editor_env:
+        try:
+            argv = shlex.split(editor_env)
+        except ValueError as exc:
+            raise ApplyError(f"$EDITOR is malformed ({editor_env!r}): {exc}") from exc
+        if not argv:
+            raise ApplyError("$EDITOR is empty — set it to an editor command and try again")
+        return argv, editor_env
+    for candidate in _DEFAULT_EDITOR_FALLBACKS:
+        resolved = shutil.which(candidate)
+        if resolved is not None:
+            return [resolved], f"{candidate} (default — $EDITOR unset)"
+    raise ApplyError(
+        "no editor available — set $EDITOR (e.g. 'export EDITOR=nano') "
+        "or install one of: " + ", ".join(_DEFAULT_EDITOR_FALLBACKS)
+    )
 
 
 def _primitive_open_in_editor(
@@ -630,22 +758,13 @@ def _primitive_open_in_editor(
     by default (``code``, ``subl``, ``mate``, ...), a ``--wait`` flag
     is inserted if the user hasn't already supplied one, so the user
     returns to the unclog apply flow only after they actually close
-    the file.
+    the file. When neither ``$EDITOR`` nor ``$VISUAL`` is set, falls
+    back to the first terminal editor found on ``PATH`` (nano, vim, vi).
     """
     action = finding.action
     if action.path is None:
         raise ApplyError("internal error: open_in_editor action is missing its target path")
-    editor_env = os.environ.get("EDITOR") or os.environ.get("VISUAL")
-    if not editor_env:
-        raise ApplyError(
-            "no editor configured — set $EDITOR (e.g. 'export EDITOR=vim') and try again"
-        )
-    try:
-        editor_argv = shlex.split(editor_env)
-    except ValueError as exc:
-        raise ApplyError(f"$EDITOR is malformed ({editor_env!r}): {exc}") from exc
-    if not editor_argv:
-        raise ApplyError("$EDITOR is empty — set it to an editor command and try again")
+    editor_argv, editor_source = _resolve_editor_argv()
     editor_bin = Path(editor_argv[0]).name
     # If the user picked a GUI fork-return editor and didn't pass a wait
     # flag themselves, add one. Terminal editors (vim, nano, emacs,
@@ -675,7 +794,7 @@ def _primitive_open_in_editor(
         action="open_in_editor",
         original_path=target,
         snapshot_path="",
-        details={**action_snapshot_hint(action), "editor": editor_env},
+        details={**action_snapshot_hint(action), "editor": editor_source},
     )
     snapshot.actions.append(record)
     return record

@@ -217,6 +217,83 @@ def test_uninstall_plugin_removes_record_and_cache(tmp_path: Path) -> None:
     assert not cache_dir.exists()
 
 
+def test_uninstall_plugin_handles_v2_dict_layout(tmp_path: Path) -> None:
+    """Regression (Bug B): Claude Code v2 nests plugins under a dict keyed by ``name@marketplace``.
+
+    Before the fix, a dict-layout ``installed_plugins.json`` would
+    silently write back unchanged (the primitive only knew the flat-list
+    shape) and ``rmtree(cache/<name>)`` would miss the real location
+    ``cache/<marketplace>/<name>/<version>/``, so the plugin reappeared
+    on the next scan. The fix walks the dict layout, removes every
+    matching key, and derives the cache dir from each entry's
+    ``installPath``.
+    """
+    claude_home = tmp_path / ".claude"
+    installed = claude_home / "plugins" / "installed_plugins.json"
+    installed.parent.mkdir(parents=True)
+
+    # Match the on-disk layout: cache/<marketplace>/<name>/<version>
+    cache_version_dir = (
+        claude_home / "plugins" / "cache" / "claude-code-plugins" / "frontend-design" / "1.0.0"
+    )
+    cache_version_dir.mkdir(parents=True)
+    (cache_version_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    # Sibling plugin under the SAME marketplace — must survive the uninstall.
+    sibling = (
+        claude_home / "plugins" / "cache" / "claude-code-plugins" / "other-plugin" / "2.0.0"
+    )
+    sibling.mkdir(parents=True)
+    (sibling / "keep.txt").write_text("keep me\n", encoding="utf-8")
+
+    installed.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    "frontend-design@claude-code-plugins": [
+                        {
+                            "scope": "user",
+                            "installPath": str(cache_version_dir),
+                            "version": "1.0.0",
+                            "installedAt": "2026-01-01T00:00:00Z",
+                        }
+                    ],
+                    "other-plugin@claude-code-plugins": [
+                        {
+                            "scope": "user",
+                            "installPath": str(sibling),
+                            "version": "2.0.0",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snap = _snapshot(tmp_path, claude_home)
+    finding = _finding(
+        fid="disabled_plugin_residue:frontend-design@claude-code-plugins",
+        type_="disabled_plugin_residue",
+        primitive="uninstall_plugin",
+        plugin_key="frontend-design@claude-code-plugins",
+    )
+    apply_action(finding, snap, claude_home=claude_home)
+
+    data = json.loads(installed.read_text(encoding="utf-8"))
+    # Target key is gone; sibling untouched.
+    assert "frontend-design@claude-code-plugins" not in data["plugins"]
+    assert "other-plugin@claude-code-plugins" in data["plugins"]
+    # Plugin-name dir (and every version beneath it) is removed.
+    plugin_name_dir = cache_version_dir.parent
+    assert not plugin_name_dir.exists()
+    # Sibling under same marketplace is untouched.
+    assert sibling.is_dir()
+    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "keep me\n"
+    # Marketplace dir still exists (holds the sibling).
+    assert (claude_home / "plugins" / "cache" / "claude-code-plugins").is_dir()
+
+
 # -- remove_claude_md_section / remove_claude_md_lines --------------------
 
 
@@ -503,6 +580,93 @@ def test_open_in_editor_adds_wait_for_gui_editor(
     )
     apply_action(finding, snap, claude_home=claude_home)
     assert "--wait" in captured[0]
+
+
+def test_open_in_editor_falls_back_to_terminal_editor_when_env_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (Bug A): missing ``$EDITOR``/``$VISUAL`` must not fail the apply.
+
+    A fresh macOS shell commonly has neither env var set. The prior
+    implementation raised ``ApplyError("no editor configured")`` as soon
+    as the user selected an ``open_in_editor`` finding — the user had
+    already confirmed the action, so failing on an environment condition
+    we can work around was a papercut. Fallback chain tries ``nano``,
+    ``vim``, ``vi`` in that order.
+    """
+    import subprocess as sp
+
+    import unclog.apply.primitives as prims
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    target = claude_home / "CLAUDE.md"
+    target.write_text("x", encoding="utf-8")
+    snap = _snapshot(tmp_path, claude_home)
+
+    captured: list[list[str]] = []
+
+    def fake_run(args, check=False):  # type: ignore[no-untyped-def]
+        captured.append(list(args))
+
+        class R:
+            returncode = 0
+
+        return R()
+
+    # Pretend only nano is on PATH, regardless of the test host.
+    fake_nano = "/usr/bin/nano"
+
+    def fake_which(name: str) -> str | None:
+        return fake_nano if name == "nano" else None
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    monkeypatch.setattr(prims.shutil, "which", fake_which)
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.delenv("VISUAL", raising=False)
+
+    finding = _finding(
+        fid="claude_md_oversized:1",
+        type_="claude_md_oversized",
+        primitive="open_in_editor",
+        path=target,
+    )
+    apply_action(finding, snap, claude_home=claude_home)
+
+    assert captured, "subprocess.run was not called"
+    # Resolved full path to nano was spawned, not a raw binary name.
+    assert captured[0][0] == fake_nano
+    # Manifest records the fallback label so --verbose / restore logs
+    # make the source of the editor unambiguous.
+    editor_record = next(a for a in snap.actions if a.action == "open_in_editor")
+    assert "default" in editor_record.details["editor"]
+    assert "EDITOR unset" in editor_record.details["editor"]
+
+
+def test_open_in_editor_raises_when_no_fallback_editor_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If neither env vars nor any fallback editor is on PATH, surface a clear error."""
+    import unclog.apply.primitives as prims
+
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    target = claude_home / "CLAUDE.md"
+    target.write_text("x", encoding="utf-8")
+    snap = _snapshot(tmp_path, claude_home)
+
+    monkeypatch.setattr(prims.shutil, "which", lambda _name: None)
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.delenv("VISUAL", raising=False)
+
+    finding = _finding(
+        fid="claude_md_oversized:1",
+        type_="claude_md_oversized",
+        primitive="open_in_editor",
+        path=target,
+    )
+    with pytest.raises(ApplyError, match="no editor available"):
+        apply_action(finding, snap, claude_home=claude_home)
 
 
 # -- project-scoped comment_out_mcp ----------------------------------------
