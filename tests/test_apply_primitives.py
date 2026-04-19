@@ -84,6 +84,35 @@ def test_delete_file_raises_without_path(tmp_path: Path) -> None:
         apply_action(finding, snap, claude_home=claude_home)
 
 
+def test_delete_file_unlinks_symlinked_skill_dir(tmp_path: Path) -> None:
+    """Regression: ``shutil.rmtree`` refuses symlinks (GH-46010).
+
+    Plugin-installed skills arrive as symlinks into a shared cache.
+    Deleting the link must remove the pointer, not recurse into the
+    dereferenced target — and must not crash the batch.
+    """
+    claude_home = tmp_path / ".claude"
+    skill_dir = claude_home / "skills" / "gsap"
+    skill_dir.parent.mkdir(parents=True)
+    backing = tmp_path / ".agents" / "skills" / "gsap"
+    backing.mkdir(parents=True)
+    (backing / "SKILL.md").write_text("shared body\n", encoding="utf-8")
+    skill_dir.symlink_to(backing)
+
+    snap = _snapshot(tmp_path, claude_home)
+    finding = _finding(
+        fid="unused_skill:gsap", type_="unused_skill", primitive="delete_file", path=skill_dir
+    )
+    record = apply_action(finding, snap, claude_home=claude_home)
+
+    # Link is gone, backing asset is untouched.
+    assert not skill_dir.exists() and not skill_dir.is_symlink()
+    assert (backing / "SKILL.md").read_text(encoding="utf-8") == "shared body\n"
+    # Snapshot captured the symlink itself, not the dereferenced tree.
+    captured = snap.files_root / record.snapshot_path
+    assert captured.is_symlink()
+
+
 # -- comment_out_mcp --------------------------------------------------------
 
 

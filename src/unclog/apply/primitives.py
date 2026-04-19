@@ -71,7 +71,10 @@ def _primitive_delete_file(
     if target is None:
         raise ApplyError(f"delete_file requires a path (finding {finding.id})")
     target = target.expanduser()
-    if not target.exists():
+    # ``exists()`` follows symlinks, so a symlink pointing at a missing
+    # target would look absent and get skipped. Check the link itself
+    # separately — we want to be able to remove a dangling symlink too.
+    if not target.exists() and not target.is_symlink():
         raise ApplyError(f"delete_file target does not exist: {target}")
     record = snapshot.capture_file(
         target,
@@ -79,20 +82,29 @@ def _primitive_delete_file(
         action="delete_file",
         details=action_snapshot_hint(action),
     )
-    if target.is_dir():
-        shutil.rmtree(target)
-    else:
-        target.unlink()
-        # Remove the parent directory too when the target is the only
-        # file in a dedicated skill folder — snapshots preserve the
-        # tree so restore still works.
-        parent = target.parent
-        if parent != claude_home and parent.is_dir():
-            try:
-                if not any(parent.iterdir()):
-                    parent.rmdir()
-            except OSError:
-                pass
+    try:
+        if target.is_symlink():
+            # Plugin-installed skills/agents arrive as symlinks into a
+            # shared cache. Deleting the pointer is the correct action;
+            # ``rmtree`` would refuse anyway (GH-46010) and touching the
+            # dereferenced target could clobber a shared asset.
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+            # Remove the parent directory too when the target is the only
+            # file in a dedicated skill folder — snapshots preserve the
+            # tree so restore still works.
+            parent = target.parent
+            if parent != claude_home and parent.is_dir():
+                try:
+                    if not any(parent.iterdir()):
+                        parent.rmdir()
+                except OSError:
+                    pass
+    except OSError as exc:
+        raise ApplyError(f"could not delete {target}: {exc}") from exc
     return record
 
 

@@ -61,12 +61,15 @@ def _restore_one(snapshot: Snapshot, action: SnapshotAction) -> None:
         return
     source = snapshot.files_root / action.snapshot_path
     destination = Path(action.original_path)
-    if source.is_dir():
-        if destination.exists():
-            if destination.is_dir():
-                shutil.rmtree(destination)
-            else:
-                destination.unlink()
+    if source.is_symlink():
+        # Captured symlinks are recreated as symlinks; don't walk into
+        # their dereferenced targets (the backing tree was never part
+        # of the apply and may be huge or shared).
+        _clear_destination(destination)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination, follow_symlinks=False)
+    elif source.is_dir():
+        _clear_destination(destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(source, destination, symlinks=True)
     elif source.is_file():
@@ -75,10 +78,16 @@ def _restore_one(snapshot: Snapshot, action: SnapshotAction) -> None:
     else:
         # Snapshot didn't capture bytes — original was absent at apply
         # time. Restoring means removing whatever the apply produced.
-        if destination.is_dir():
-            shutil.rmtree(destination)
-        elif destination.is_file():
-            destination.unlink()
+        _clear_destination(destination)
+
+
+def _clear_destination(destination: Path) -> None:
+    if destination.is_symlink():
+        destination.unlink()
+    elif destination.is_dir():
+        shutil.rmtree(destination)
+    elif destination.exists():
+        destination.unlink()
 
 
 __all__ = ["RestoreResult", "restore_snapshot"]

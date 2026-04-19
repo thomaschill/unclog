@@ -62,6 +62,29 @@ def test_delete_file_restore_roundtrip(tmp_path: Path) -> None:
     assert skill_md.read_text(encoding="utf-8") == "body\n"
 
 
+def test_delete_symlinked_skill_restore_roundtrip(tmp_path: Path) -> None:
+    claude_home = tmp_path / ".claude"
+    skill_link = claude_home / "skills" / "gsap"
+    skill_link.parent.mkdir(parents=True)
+    backing = tmp_path / ".agents" / "skills" / "gsap"
+    backing.mkdir(parents=True)
+    (backing / "SKILL.md").write_text("shared\n", encoding="utf-8")
+    skill_link.symlink_to(backing)
+
+    snap = create_snapshot(tmp_path / "snapshots", claude_home=claude_home, now=NOW)
+    finding = _finding(fid="unused_skill:gsap", primitive="delete_file", path=skill_link)
+    apply_action(finding, snap, claude_home=claude_home)
+    snap.persist()
+    assert not skill_link.is_symlink()
+
+    result = restore_snapshot(snap)
+    assert not result.failed
+    assert skill_link.is_symlink()
+    assert skill_link.resolve() == backing.resolve()
+    # Backing store untouched throughout.
+    assert (backing / "SKILL.md").read_text(encoding="utf-8") == "shared\n"
+
+
 def test_comment_out_mcp_restore_roundtrip(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
@@ -176,3 +199,35 @@ def test_apply_findings_then_load_and_restore(tmp_path: Path) -> None:
     assert not restore_result.failed
     assert skill_md.read_text(encoding="utf-8") == "body\n"
     assert "Drop" in md_path.read_text(encoding="utf-8")
+
+
+def test_apply_findings_survives_one_bad_primitive(tmp_path: Path) -> None:
+    """Regression: a raw OSError in one primitive used to crash the whole batch.
+
+    The user had 166 selected items; a single symlinked skill hitting
+    ``shutil.rmtree`` aborted the run and left the snapshot manifest
+    unwritten (so even partial work wasn't restorable).
+    """
+    claude_home = tmp_path / ".claude"
+    good_skill = claude_home / "skills" / "good" / "SKILL.md"
+    good_skill.parent.mkdir(parents=True)
+    good_skill.write_text("keep-bytes\n", encoding="utf-8")
+    ghost = claude_home / "skills" / "ghost"
+    # Path doesn't exist and isn't a symlink — delete_file will raise
+    # ApplyError, but the batch should carry on to ``good``.
+    findings = [
+        _finding(fid="unused_skill:ghost", primitive="delete_file", path=ghost),
+        _finding(fid="unused_skill:good", primitive="delete_file", path=good_skill),
+    ]
+    snapshots_dir = claude_home / ".unclog" / "snapshots"
+    result = apply_findings(
+        findings, claude_home=claude_home, snapshots_dir=snapshots_dir, now=NOW
+    )
+    assert len(result.failed) == 1
+    assert len(result.succeeded) == 1
+    assert not good_skill.exists()
+    # Manifest must be on disk even though one item failed.
+    assert result.snapshot.manifest_path.is_file()
+    # ``unclog restore`` must be able to find the snapshot.
+    reloaded = load_snapshot(snapshots_dir, "latest")
+    assert reloaded.id == result.snapshot.id

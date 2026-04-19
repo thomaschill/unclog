@@ -62,14 +62,24 @@ def apply_findings(
         now=reference,
     )
     result = ApplyResult(snapshot=snapshot)
-    for finding in findings:
-        try:
-            record = apply_action(finding, snapshot, claude_home=claude_home)
-        except ApplyError as exc:
-            result.failed.append((finding, str(exc)))
-        else:
-            result.succeeded.append((finding, record))
-    snapshot.persist()
+    try:
+        for finding in findings:
+            try:
+                record = apply_action(finding, snapshot, claude_home=claude_home)
+            except ApplyError as exc:
+                result.failed.append((finding, str(exc)))
+            except OSError as exc:
+                # A primitive that leaks a raw OSError is a bug, but
+                # shouldn't nuke the entire batch — record it and keep
+                # going so the user's other 165 items still apply.
+                result.failed.append((finding, f"{type(exc).__name__}: {exc}"))
+            else:
+                result.succeeded.append((finding, record))
+    finally:
+        # Persist even on unexpected exit so captured bytes stay
+        # restorable — a snapshot dir without a manifest is invisible
+        # to ``unclog restore``.
+        snapshot.persist()
     return result
 
 

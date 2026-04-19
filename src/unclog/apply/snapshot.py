@@ -131,7 +131,16 @@ class Snapshot:
         rel = _relative_snapshot_path(original, self.claude_home, self.project_paths)
         snap_path = self.files_root / rel
         snap_path.parent.mkdir(parents=True, exist_ok=True)
-        if original.is_dir():
+        if original.is_symlink():
+            # Preserve the pointer itself. ``is_dir()``/``is_file()``
+            # dereference symlinks, so without this branch a symlink to
+            # a large directory would be copied as a full tree — wrong
+            # semantics for restore, since the apply only removes the
+            # link.
+            if snap_path.is_symlink() or snap_path.exists():
+                snap_path.unlink()
+            shutil.copy2(original, snap_path, follow_symlinks=False)
+        elif original.is_dir():
             if snap_path.exists():
                 shutil.rmtree(snap_path)
             shutil.copytree(original, snap_path, symlinks=True)
