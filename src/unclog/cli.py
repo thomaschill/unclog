@@ -82,6 +82,15 @@ def root(
         "--no-animation",
         help="Disable motion (post-apply countdown); keeps colour.",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help=(
+            "Restore the full pre-picker chrome (scan-meta, tips, "
+            "'also running' footer). Default mode trims these."
+        ),
+    ),
     list_claude_md: bool = typer.Option(
         False,
         "--list-claude-md",
@@ -104,9 +113,11 @@ def root(
     """Scan the current Claude Code installation and print a report.
 
     The default mode prints the report, then (if findings exist and
-    stdout is a TTY) walks through the interactive fix selector.
-    --report, --json, and --plain all suppress the fix flow. --yes
-    skips prompts and applies auto-checked findings only.
+    stdout is a TTY) opens one sectioned picker — Apply (detector
+    fixes) plus Curate agents/skills/MCPs — followed by a single
+    apply confirm. --report, --json, and --plain all suppress the
+    fix flow. --yes skips prompts and applies auto-checked findings
+    only (curate items are never auto-applied).
     """
     if ctx.invoked_subcommand is not None:
         return
@@ -118,6 +129,7 @@ def root(
         plain_flag=plain,
         report_only=report_only,
         no_animation_flag=no_animation,
+        verbose_flag=verbose,
     )
 
     console = Console(no_color=not display.colour)
@@ -139,7 +151,12 @@ def root(
         if display.plain:
             typer.echo(render_plain(state), nl=False)
         else:
-            render_rich(state, console, show_wordmark=display.show_wordmark)
+            render_rich(
+                state,
+                console,
+                show_wordmark=display.show_wordmark,
+                verbose=display.verbose,
+            )
 
         if report_only or as_json or display.plain:
             return

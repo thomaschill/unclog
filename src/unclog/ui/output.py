@@ -37,7 +37,12 @@ from unclog.state import InstallationState
 from unclog.ui.chrome import hint_bar, section_rule
 from unclog.ui.hero import render_baseline_panel
 from unclog.ui.theme import ACCENT, DIM, SEVERITY_OK
-from unclog.ui.welcome import welcome_panel
+from unclog.ui.welcome import (
+    first_run_tip_line,
+    is_first_run,
+    mark_first_run_seen,
+    welcome_panel,
+)
 from unclog.util.paths import ClaudePaths
 
 # Claude Code's nested-detail connector — anchors grouped child rows
@@ -816,6 +821,7 @@ def render_rich(
     console: Console,
     *,
     show_wordmark: bool = True,
+    verbose: bool = False,
 ) -> None:
     """Pretty TTY render in the Claude-Code visual vocabulary.
 
@@ -826,19 +832,32 @@ def render_rich(
     False the welcome panel is suppressed (used by ``--report`` and
     non-TTY fallback paths). Spec §11.4 still applies —
     ``--json``/``--plain`` never route through this renderer.
+
+    ``verbose`` toggles the full pre-picker chrome (scan-meta block,
+    persistent tips, "also running" footer). Default is the trimmed
+    view; ``--verbose`` restores the historical layout.
     """
     report = build_report(state)
     baseline = report["baseline"]
 
     if show_wordmark:
-        console.print(welcome_panel(state))
+        console.print(welcome_panel(state, verbose=verbose))
+        # First-run reassurance lives below the panel so the panel
+        # itself stays a stable, recognisable nameplate. The marker is
+        # written *after* a successful render so a crash on the
+        # baseline panel doesn't suppress the tip on retry.
+        paths = ClaudePaths(home=state.claude_home)
+        if not verbose and is_first_run(paths):
+            console.print(first_run_tip_line())
+            mark_first_run_seen(paths)
         console.print("")
     console.print(render_baseline_panel(baseline, report["composition"]))
     console.print("")
     console.print(section_rule("findings"))
     curate = build_curate_findings(state)
     _render_findings_rich(report["findings"], console, curate_findings=curate)
-    _render_also_running(state, report["findings"], console)
+    if verbose:
+        _render_also_running(state, report["findings"], console)
     if report["warnings"]:
         console.print("")
         console.print(section_rule("warnings"))
@@ -975,11 +994,17 @@ def _render_also_running(
 ) -> None:
     """Acknowledge MCPs and hooks we saw but chose not to flag.
 
-    Without this, a heavily-used MCP like ``Roblox_Studio`` appears in
-    the composition block (because it contributes ~5k tokens) but is
-    silent in the findings — users reasonably wonder why. Same for sound
-    hooks that don't fire every turn. Listing them here closes the loop:
-    "we saw these, they're working as intended, no action needed."
+    Verbose-only: in the trimmed default view this footer is too noisy
+    — every row simply restates a row from the baseline panel above.
+    ``--verbose`` brings it back for users who want the full audit
+    trail.
+
+    Without this block, a heavily-used MCP like ``Roblox_Studio``
+    appears in the composition (because it contributes ~5k tokens) but
+    is silent in the findings — users reasonably wonder why. Same for
+    sound hooks that don't fire every turn. Listing them here closes
+    the loop: "we saw these, they're working as intended, no action
+    needed."
 
     Duplicate-safe: skips any server/hook already surfaced in
     ``findings`` so users never see the same name twice across the

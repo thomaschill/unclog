@@ -2,8 +2,17 @@
 
 Replaces the old one-line ``▁▂▃ unclog`` wordmark with a rounded
 thin-border panel containing the version, a one-line description of
-what unclog does, live scan metadata (home, project count, session
-freshness) and a short tips list.
+what unclog does, and (in verbose mode) live scan metadata + a short
+tips list.
+
+Two layouts:
+
+- **Default**: title + tagline only. Smaller hero, more room for the
+  baseline panel below it. The first time a user runs unclog the
+  caller should also print :func:`first_run_tip_line` to surface the
+  safety message once before disappearing forever.
+- **Verbose** (``--verbose``): the historical layout — tagline, scan
+  metadata grid, and the full tips list inside the panel.
 
 Deliberately thin on behaviour: accepts an :class:`InstallationState`
 and derives everything it needs. The caller decides where to print it.
@@ -22,6 +31,7 @@ from unclog import __version__
 from unclog.state import InstallationState
 from unclog.ui.chrome import rounded_panel
 from unclog.ui.theme import ACCENT, DIM
+from unclog.util.paths import ClaudePaths
 
 # Short list chosen to surface the non-obvious safety properties and
 # the escape hatch for automation. Three items is the limit — more
@@ -32,11 +42,30 @@ _TIPS: tuple[str, ...] = (
     "--json for machine-readable output",
 )
 
+# The sentinel that flips first-run messaging off forever. Empty file —
+# its presence is the only signal we need. Lives under ``.unclog/`` so
+# it tracks with the snapshot dir if the user moves their Claude home.
+_FIRST_RUN_MARKER_NAME = "first-run-seen"
 
-def welcome_panel(state: InstallationState) -> RenderableType:
+# Single-line first-run reassurance. Compresses two of the three tips
+# into one dim hint that sits below the panel for one run only — the
+# safety story without the persistent footprint.
+_FIRST_RUN_TIP = (
+    "first run? nothing is mutated until you confirm  ·  "
+    "every apply snapshots for undo  ·  --verbose for more context"
+)
+
+
+def welcome_panel(state: InstallationState, *, verbose: bool = False) -> RenderableType:
     """Return the rounded welcome panel for ``state``.
 
-    Scanning metadata reflects what the scan actually looked at:
+    Default mode renders just the title + tagline (with the version in
+    the subtitle). ``verbose=True`` restores the historical layout with
+    the scan-meta grid and the full tips list.
+
+    Scanning metadata (verbose only) reflects what the scan actually
+    looked at:
+
     - ``scanning`` — the ``claude_home`` path the scan walked.
     - ``projects`` — number of registered projects in ``~/.claude.json``.
     - ``session`` — most recent session timestamp + source project, or
@@ -47,14 +76,54 @@ def welcome_panel(state: InstallationState) -> RenderableType:
     # nameplate rather than a string of metadata.
     title = Text("unclog", style=f"bold {ACCENT}")
     version_subtitle = Text(f"v{__version__}", style=DIM)
-
     tagline = Text("local-only audit of your Claude Code installation", style=DIM)
+
+    if not verbose:
+        return rounded_panel(tagline, title=title, subtitle=version_subtitle)
 
     meta = _scan_meta(state)
     tips = _tips_block()
-
     body = Group(tagline, Text(""), meta, Text(""), tips)
     return rounded_panel(body, title=title, subtitle=version_subtitle)
+
+
+def first_run_tip_line() -> Text:
+    """Return the one-line first-run reassurance hint.
+
+    Rendered below the panel by the caller when this is the user's
+    first invocation. Single line, dim styling — visible enough to
+    register on first read, quiet enough to not feel like chrome.
+    """
+    return Text(_FIRST_RUN_TIP, style=DIM)
+
+
+def is_first_run(paths: ClaudePaths) -> bool:
+    """Has the first-run marker been written under ``paths``?
+
+    Defaults to "yes, this is the first run" if the marker can't be
+    read for any reason — false-positive (showing the tip twice) is
+    less bad than false-negative (silently swallowing the safety
+    message on the very first run).
+    """
+    try:
+        return not (paths.unclog_dir / _FIRST_RUN_MARKER_NAME).exists()
+    except OSError:
+        return True
+
+
+def mark_first_run_seen(paths: ClaudePaths) -> None:
+    """Drop the empty sentinel file that flips first-run messaging off.
+
+    Best-effort: a permissions failure on the unclog dir downgrades to
+    "the user sees the tip again next time", which is harmless. We do
+    not surface the error — it would be noise on a path that's already
+    succeeded at the work the user actually asked for.
+    """
+    try:
+        paths.unclog_dir.mkdir(parents=True, exist_ok=True)
+        (paths.unclog_dir / _FIRST_RUN_MARKER_NAME).touch(exist_ok=True)
+    except OSError:
+        pass
 
 
 def _scan_meta(state: InstallationState) -> Table:
@@ -120,4 +189,9 @@ def _tips_block() -> Table:
     return table
 
 
-__all__ = ["welcome_panel"]
+__all__ = [
+    "first_run_tip_line",
+    "is_first_run",
+    "mark_first_run_seen",
+    "welcome_panel",
+]

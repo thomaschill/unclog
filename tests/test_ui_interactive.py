@@ -8,6 +8,7 @@ from rich.console import Console
 
 from unclog.findings.base import Action, Finding, Scope
 from unclog.ui.interactive import InteractiveOptions, run_interactive
+from unclog.ui.picker import Section
 
 
 @dataclass
@@ -17,6 +18,7 @@ class FakePrompter:
     confirm_answers: list[bool] = field(default_factory=list)
     multiselect_answer: list[Finding] = field(default_factory=list)
     confirm_calls: list[str] = field(default_factory=list)
+    multiselect_calls: list[tuple[str, list[Section]]] = field(default_factory=list)
 
     def confirm(self, message: str, default: bool) -> bool:
         self.confirm_calls.append(message)
@@ -24,14 +26,12 @@ class FakePrompter:
             return default
         return self.confirm_answers.pop(0)
 
-    def multiselect(
+    def multiselect_sections(
         self,
-        message: str,
-        choices: list[tuple[str, Finding]],
-        defaults: set[str],
-        *,
-        subtitle: str | None = None,
+        title: str,
+        sections: list[Section],
     ) -> list[Finding]:
+        self.multiselect_calls.append((title, sections))
         return list(self.multiselect_answer)
 
 
@@ -253,12 +253,14 @@ def _curate_finding(path: Path, ftype: str = "agent_inventory", tokens: int = 42
     )
 
 
-def test_interactive_offers_curate_prompt_and_skips_on_no(tmp_path: Path) -> None:
+def test_interactive_curate_only_picker_skips_when_nothing_selected(tmp_path: Path) -> None:
+    """With curate-only and an empty picker selection, we exit without
+    confirming or applying — single-picker flow has no separate y/N gate."""
     agent_md = tmp_path / "agents" / "foo.md"
     agent_md.parent.mkdir(parents=True)
     agent_md.write_text("a\n", encoding="utf-8")
     curate = [_curate_finding(agent_md)]
-    prompter = FakePrompter(confirm_answers=[False])  # decline curate
+    prompter = FakePrompter(multiselect_answer=[])  # nothing picked
     result = run_interactive(
         [],
         claude_home=tmp_path,
@@ -270,19 +272,23 @@ def test_interactive_offers_curate_prompt_and_skips_on_no(tmp_path: Path) -> Non
     )
     assert result is None
     assert agent_md.exists()
-    # The single confirm call was the curate offer prompt.
-    assert len(prompter.confirm_calls) == 1
-    assert "Review" in prompter.confirm_calls[0]
+    assert prompter.confirm_calls == []
+    # One picker call; single-section so title is suppressed.
+    assert len(prompter.multiselect_calls) == 1
+    title, sections = prompter.multiselect_calls[0]
+    assert title == "Select fixes and curate"
+    assert len(sections) == 1
+    assert sections[0].title == ""
 
 
-def test_interactive_curate_yes_applies_selected_items(tmp_path: Path) -> None:
+def test_interactive_curate_selection_confirms_and_applies(tmp_path: Path) -> None:
+    """Single picker → single confirm → apply. No curate y/N preamble."""
     agent_md = tmp_path / "agents" / "foo.md"
     agent_md.parent.mkdir(parents=True)
     agent_md.write_text("a\n", encoding="utf-8")
     curate = [_curate_finding(agent_md)]
-    # confirm: [yes to curate offer, yes to apply confirmation]
     prompter = FakePrompter(
-        confirm_answers=[True, True],
+        confirm_answers=[True],  # only the apply confirm
         multiselect_answer=curate,
     )
     result = run_interactive(
@@ -297,6 +303,65 @@ def test_interactive_curate_yes_applies_selected_items(tmp_path: Path) -> None:
     assert result is not None
     assert len(result.succeeded) == 1
     assert not agent_md.exists()
+    assert len(prompter.confirm_calls) == 1
+    assert prompter.confirm_calls[0].startswith("Apply 1 change")
+
+
+def test_interactive_combined_picker_renders_apply_and_curate_sections(
+    tmp_path: Path,
+) -> None:
+    """When both detector and curate findings exist, the picker gets
+    multiple titled sections (Apply + Curate agents)."""
+    apply_md = tmp_path / "skills" / "g" / "SKILL.md"
+    apply_md.parent.mkdir(parents=True)
+    apply_md.write_text("body\n", encoding="utf-8")
+    agent_md = tmp_path / "agents" / "foo.md"
+    agent_md.parent.mkdir(parents=True)
+    agent_md.write_text("a\n", encoding="utf-8")
+    applicable = [_f("a", "delete_file", path=apply_md)]
+    curate = [_curate_finding(agent_md)]
+    prompter = FakePrompter(multiselect_answer=[])
+    run_interactive(
+        applicable,
+        claude_home=tmp_path,
+        project_paths=(),
+        console=Console(record=True),
+        options=InteractiveOptions(),
+        prompter=prompter,
+        curate_findings=curate,
+    )
+    assert len(prompter.multiselect_calls) == 1
+    _, sections = prompter.multiselect_calls[0]
+    titles = [s.title for s in sections]
+    assert titles == ["Apply", "Curate agents"]
+
+
+def test_interactive_curate_picker_partitions_by_type(tmp_path: Path) -> None:
+    """Mixed curate findings split into per-type sections; empty types drop."""
+    agent_md = tmp_path / "agents" / "foo.md"
+    agent_md.parent.mkdir(parents=True)
+    agent_md.write_text("a\n", encoding="utf-8")
+    skill_dir = tmp_path / "skills" / "bar"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("s\n", encoding="utf-8")
+    curate = [
+        _curate_finding(agent_md, ftype="agent_inventory"),
+        _curate_finding(skill_dir / "SKILL.md", ftype="skill_inventory"),
+    ]
+    prompter = FakePrompter(multiselect_answer=[])
+    run_interactive(
+        [],
+        claude_home=tmp_path,
+        project_paths=(),
+        console=Console(record=True),
+        options=InteractiveOptions(),
+        prompter=prompter,
+        curate_findings=curate,
+    )
+    _, sections = prompter.multiselect_calls[0]
+    titles = [s.title for s in sections]
+    # Two non-empty types → titled sections; MCPs absent → dropped.
+    assert titles == ["Curate agents", "Curate skills"]
 
 
 def test_interactive_yes_mode_does_not_run_curate(tmp_path: Path) -> None:

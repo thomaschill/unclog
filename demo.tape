@@ -3,15 +3,16 @@
 # Run with: vhs demo.tape
 # Output:   demo.gif
 #
-# Drives the picker to toggle a couple of findings, submits,
-# then declines both confirm prompts ('n'). Nothing is written.
+# Drives the single sectioned picker: scrolls a few rows, toggles a
+# few items, submits, and declines the apply confirm. Nothing is
+# written to disk.
 
 Output demo.gif
 
 Set Shell "zsh"
 Set FontSize 14
 Set Width 1400
-Set Height 1000
+Set Height 800
 Set Padding 20
 Set TypingSpeed 40ms
 
@@ -31,21 +32,35 @@ Enter
 # Wait for scan + MCP probe + render + picker mount
 Sleep 8s
 
-# Move cursor down through rows so the viewer sees the highlight travel
+# Move cursor down through the picker — viewer sees highlight travel
+Down
+Sleep 350ms
 Down
 Sleep 350ms
 Down
 Sleep 350ms
 
-# Toggle one — footer updates to "1 selected"
+# Toggle one row — running-total footer ticks to "1 selected"
 Space
 Sleep 700ms
 
-# Move further, toggle another — footer updates to "2 selected"
 Down
 Sleep 300ms
 Down
 Sleep 350ms
+
+# Toggle a second row — "2 selected"
+Space
+Sleep 700ms
+
+Down
+Sleep 300ms
+Down
+Sleep 300ms
+Down
+Sleep 350ms
+
+# Toggle a third row — "3 selected"
 Space
 Sleep 900ms
 
@@ -53,53 +68,9 @@ Sleep 900ms
 Enter
 Sleep 1200ms
 
-# Step 1 confirm: "Apply N change(s)? [y/N]" — decline
-Type "n"
-Sleep 300ms
-Enter
-Sleep 900ms
-
-# Step 2 prompt: "Review N agent(s) + skill(s) + remote MCP(s)…? [y/N]" — enter
-Type "y"
-Sleep 300ms
-Enter
-
-# Wait for curate picker (~200 rows) to mount
-Sleep 2s
-
-# Drive the curate picker: scroll, toggle a few items to show the footer tick up
-Down
-Sleep 250ms
-Down
-Sleep 250ms
-Down
-Sleep 300ms
-Space
-Sleep 600ms
-
-Down
-Sleep 250ms
-Down
-Sleep 250ms
-Space
-Sleep 600ms
-
-Down
-Sleep 250ms
-Down
-Sleep 250ms
-Down
-Sleep 300ms
-Space
-Sleep 900ms
-
-# Submit the curate selection
-Enter
-Sleep 1200ms
-
-# Final "Delete N item(s)? [y/N]" — decline, nothing is written
+# "Apply N change(s)? [y/N]" — decline; nothing is written.
 Type "n"
 Sleep 300ms
 Enter
 
-Sleep 700ms
+Sleep 900ms

@@ -1,4 +1,4 @@
-"""Rich-based multiselect picker.
+"""Rich-based multiselect picker, sectioned.
 
 Replaces the curses-driven ``pick`` library with a ``rich.live.Live``
 repaint loop driven by ``readchar`` for keyboard input. Compared to
@@ -14,27 +14,38 @@ repaint loop driven by ``readchar`` for keyboard input. Compared to
   that recomputes as the user toggles, which is the single most
   actionable number when the picker is open.
 
+The picker takes a list of :class:`Section` so a single picker can
+present "Apply N fixes" and "Curate K agents/skills/MCPs" as visually
+separated groups inside one decision surface. Section headers render
+as non-selectable rows; cursor movement skips them. A section with an
+empty title renders without a header — useful for single-section
+callers that want the historical look.
+
 Viewport scrolling is done by hand: Rich's Live redraws the full
 renderable each frame, so with 200+ rows we'd overflow the terminal.
-We render at most ``visible_rows`` items centred on the cursor and
+We render at most ``visible_rows`` rows centred on the cursor and
 update the slice as the cursor moves past the top/bottom margin.
+Section headers count toward the visible-row budget so their presence
+doesn't push selectable rows off-screen.
 
 Keys:
-- ``↑``/``↓`` (and ``k``/``j``) — move cursor
+
+- ``↑``/``↓`` (and ``k``/``j``) — move cursor; skips section headers
 - ``Space`` — toggle current row
 - ``Enter`` — confirm selection
-- ``a`` — invert all
-- ``A`` — check all
-- ``n`` — uncheck all
-- ``g`` / ``Home`` — jump to top
-- ``G`` / ``End`` — jump to bottom
+- ``a`` — check every row in the cursor's current section
+- ``A`` — check every row in every section
+- ``n`` — clear every row in the cursor's current section
+- ``N`` — clear every row in every section
+- ``g`` / ``Home`` — jump to first selectable row
+- ``G`` / ``End`` — jump to last selectable row
 - ``PgUp`` / ``PgDn`` — page up/down
 - ``q`` / ``Esc`` / ``Ctrl+C`` — quit without selecting
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import readchar
 from rich.console import Console, Group, RenderableType
@@ -80,6 +91,49 @@ _FRAME_OVERHEAD = 10  # panel borders + header + legend + footer
 _CURSOR_MARGIN = 3  # keep this many rows visible above/below the cursor
 
 
+@dataclass
+class Section:
+    """One visually-grouped block of findings inside a single picker.
+
+    ``title`` renders as a dim header row above the section's findings.
+    Pass an empty string to omit the header — used by callers that
+    only have one section and want the historical look.
+
+    ``preselected`` holds indices into ``findings`` that should start
+    checked. Curate sections always pass ``set()`` (consent is
+    per-item); detector sections pass auto-checked indices.
+    """
+
+    title: str
+    findings: list[Finding]
+    preselected: set[int] = field(default_factory=set)
+
+
+@dataclass(frozen=True)
+class _HeaderRow:
+    """Non-selectable section divider row."""
+
+    section_idx: int
+    title: str
+
+
+@dataclass(frozen=True)
+class _FindingRow:
+    """Selectable finding row.
+
+    ``flat_idx`` is the finding's position in the cross-section flat
+    list — the cardinality used for the ``selected`` set so toggling
+    is independent of section boundaries.
+    """
+
+    section_idx: int
+    flat_idx: int
+    finding: Finding
+
+
+_Row = _HeaderRow | _FindingRow
+
+
 def _category_badge(finding_type: str) -> tuple[str, str]:
     return _CATEGORY_STYLE.get(finding_type, _DEFAULT_BADGE)
 
@@ -94,28 +148,126 @@ def _format_scope(kind: str) -> Text:
     return Text(f"{kind:>7}", style=DIM)
 
 
+def _build_rows(sections: list[Section]) -> tuple[list[_Row], list[Finding]]:
+    """Flatten ``sections`` into a row list + the cross-section finding list.
+
+    The row list interleaves header rows (where the section has a
+    non-empty title) with one ``_FindingRow`` per finding. The flat
+    finding list is the canonical ordering used by ``selected``.
+    """
+    rows: list[_Row] = []
+    flat: list[Finding] = []
+    for section_idx, section in enumerate(sections):
+        if section.title:
+            rows.append(_HeaderRow(section_idx=section_idx, title=section.title))
+        for finding in section.findings:
+            flat_idx = len(flat)
+            flat.append(finding)
+            rows.append(
+                _FindingRow(
+                    section_idx=section_idx,
+                    flat_idx=flat_idx,
+                    finding=finding,
+                )
+            )
+    return rows, flat
+
+
+def _initial_selected(sections: list[Section]) -> set[int]:
+    """Translate per-section ``preselected`` indices into flat indices."""
+    selected: set[int] = set()
+    flat_offset = 0
+    for section in sections:
+        for local_idx in section.preselected:
+            if 0 <= local_idx < len(section.findings):
+                selected.add(flat_offset + local_idx)
+        flat_offset += len(section.findings)
+    return selected
+
+
+def _first_selectable(rows: list[_Row]) -> int:
+    """Index of the first ``_FindingRow``, or 0 if there are none."""
+    for i, row in enumerate(rows):
+        if isinstance(row, _FindingRow):
+            return i
+    return 0
+
+
+def _last_selectable(rows: list[_Row]) -> int:
+    for i in range(len(rows) - 1, -1, -1):
+        if isinstance(rows[i], _FindingRow):
+            return i
+    return 0
+
+
 @dataclass
 class _State:
-    """Mutable picker state — cursor index, selection set, viewport top."""
+    """Mutable picker state — cursor index (into ``rows``), selection
+    set (flat finding indices), viewport top (row index)."""
 
     cursor: int
     selected: set[int]
     viewport_top: int
 
-    def toggle(self) -> None:
-        if self.cursor in self.selected:
-            self.selected.remove(self.cursor)
+    def toggle(self, rows: list[_Row]) -> None:
+        row = rows[self.cursor]
+        if not isinstance(row, _FindingRow):
+            return
+        if row.flat_idx in self.selected:
+            self.selected.remove(row.flat_idx)
         else:
-            self.selected.add(self.cursor)
+            self.selected.add(row.flat_idx)
 
-    def select_all(self, n: int) -> None:
-        self.selected = set(range(n))
+    def select_all(self, rows: list[_Row]) -> None:
+        self.selected = {r.flat_idx for r in rows if isinstance(r, _FindingRow)}
 
     def select_none(self) -> None:
         self.selected = set()
 
-    def invert(self, n: int) -> None:
-        self.selected = set(range(n)) - self.selected
+    def select_section(self, rows: list[_Row], section_idx: int) -> None:
+        self.selected |= {
+            r.flat_idx
+            for r in rows
+            if isinstance(r, _FindingRow) and r.section_idx == section_idx
+        }
+
+    def deselect_section(self, rows: list[_Row], section_idx: int) -> None:
+        self.selected -= {
+            r.flat_idx
+            for r in rows
+            if isinstance(r, _FindingRow) and r.section_idx == section_idx
+        }
+
+
+def _move_cursor(state: _State, rows: list[_Row], delta: int) -> None:
+    """Move cursor by ``delta`` finding rows, skipping headers.
+
+    A header at the destination is jumped over in the same direction.
+    If we run off the end, the cursor clamps to the nearest selectable
+    row in the original direction of travel.
+    """
+    if not rows:
+        return
+    step = 1 if delta > 0 else -1
+    remaining = abs(delta)
+    pos = state.cursor
+    while remaining > 0:
+        next_pos = pos + step
+        if next_pos < 0 or next_pos >= len(rows):
+            break
+        pos = next_pos
+        if isinstance(rows[pos], _FindingRow):
+            remaining -= 1
+    # If we landed on a header (because we ran off the end) drift back
+    # to the nearest selectable row.
+    if not isinstance(rows[pos], _FindingRow):
+        scan = -step
+        scan_pos = pos
+        while 0 <= scan_pos < len(rows) and not isinstance(rows[scan_pos], _FindingRow):
+            scan_pos += scan
+        if 0 <= scan_pos < len(rows) and isinstance(rows[scan_pos], _FindingRow):
+            pos = scan_pos
+    state.cursor = pos
 
 
 def _clamp_viewport(state: _State, total: int, visible: int) -> None:
@@ -123,10 +275,8 @@ def _clamp_viewport(state: _State, total: int, visible: int) -> None:
     if total <= visible:
         state.viewport_top = 0
         return
-    # Cursor above viewport top + margin → scroll up.
     if state.cursor < state.viewport_top + _CURSOR_MARGIN:
         state.viewport_top = max(0, state.cursor - _CURSOR_MARGIN)
-    # Cursor below viewport bottom minus margin -> scroll down.
     bottom = state.viewport_top + visible - 1
     if state.cursor > bottom - _CURSOR_MARGIN:
         state.viewport_top = min(total - visible, state.cursor + _CURSOR_MARGIN - visible + 1)
@@ -134,11 +284,11 @@ def _clamp_viewport(state: _State, total: int, visible: int) -> None:
 
 
 def _build_frame(
-    findings: list[Finding],
+    rows: list[_Row],
+    flat: list[Finding],
     state: _State,
     title: str,
     visible_rows: int,
-    subtitle: str | None = None,
 ) -> RenderableType:
     """Render the picker as panel + hint bar + running-total line.
 
@@ -146,17 +296,14 @@ def _build_frame(
 
     1. **Rounded panel** — table of rows + in-panel position indicator.
        Cursor row carries a thin left-edge accent bar (``▌``) in a
-       dedicated leading column; text goes bold. No reverse styling —
-       the bar alone is the "you are here" signal.
+       dedicated leading column; text goes bold. Section header rows
+       skip the cursor column entirely and span the rest with a dim
+       title and a count.
     2. **Hint bar** — keybind legend below the panel (outside the frame).
     3. **Running total** — ``N selected · ~X,XXX tokens to save`` on
        its own line at the bottom.
-
-    Splitting the legend + total out of the panel matches Claude Code's
-    convention: the panel *is* the content; legends describe it from
-    outside.
     """
-    total = len(findings)
+    total = len(rows)
     visible = max(_MIN_VISIBLE_ROWS, min(visible_rows, total))
     _clamp_viewport(state, total, visible)
 
@@ -177,9 +324,18 @@ def _build_frame(
 
     end = min(state.viewport_top + visible, total)
     for i in range(state.viewport_top, end):
-        finding = findings[i]
+        row = rows[i]
+        if isinstance(row, _HeaderRow):
+            # Headers render as a dim divider line that spans the row.
+            # ``end_section=True`` style: leading blank columns, then a
+            # bold-dim header text in the title column.
+            header = Text(f"─ {row.title} ─", style=f"bold {DIM}")
+            table.add_row(Text(" "), Text(""), Text(""), Text(""), Text(""), header)
+            continue
+
         is_cursor = i == state.cursor
-        is_selected = i in state.selected
+        is_selected = row.flat_idx in state.selected
+        finding = row.finding
 
         badge_label, badge_colour = _category_badge(finding.type)
         cursor_bar = Text("▌" if is_cursor else " ", style=ACCENT if is_cursor else DIM)
@@ -191,16 +347,26 @@ def _build_frame(
         title_text = Text(finding.title, style=title_style)
         table.add_row(cursor_bar, marker_text, badge_text, tokens_text, scope_text, title_text)
 
-    # Scroll indicators: compact "12-30 of 196" so the user always
-    # knows where they are in the list, plus tiny arrows when more
-    # content exists above or below the viewport. Stays inside the
-    # panel — it's panel-local state, not a global legend.
+    # Position indicator: count selectable rows only — headers are
+    # navigation furniture, not items the user is choosing between.
+    selectable_indices = [
+        idx for idx, r in enumerate(rows) if isinstance(r, _FindingRow)
+    ]
+    finding_total = len(selectable_indices)
     above = state.viewport_top > 0
     below = end < total
-    position = Text()
-    position.append(f"  {state.viewport_top + 1}-{end}", style=DIM)
-    position.append(" of ", style=DIM)
-    position.append(f"{total}", style="default")
+    if finding_total:
+        cursor_position = (
+            selectable_indices.index(state.cursor) + 1
+            if state.cursor in selectable_indices
+            else 1
+        )
+        position = Text()
+        position.append(f"  {cursor_position}", style=DIM)
+        position.append(" of ", style=DIM)
+        position.append(f"{finding_total}", style="default")
+    else:
+        position = Text("  (no items)", style=DIM)
     if above:
         position.append("   ↑ more above", style=DIM)
     if below:
@@ -209,15 +375,14 @@ def _build_frame(
     panel = rounded_panel(
         Group(table, Text(""), position),
         title=title,
-        subtitle=subtitle,
     )
 
     legend = hint_bar(
         [
             ("↑↓", "move"),
             ("space", "toggle"),
-            ("A", "all"),
-            ("n", "none"),
+            ("a/A", "section/all"),
+            ("n/N", "clear section/all"),
             ("enter", "apply"),
             ("q", "quit"),
         ]
@@ -225,7 +390,7 @@ def _build_frame(
 
     selected_count = len(state.selected)
     token_total = sum(
-        f.token_savings or 0 for i, f in enumerate(findings) if i in state.selected
+        f.token_savings or 0 for i, f in enumerate(flat) if i in state.selected
     )
     running_total = Text()
     running_total.append("  ", style=DIM)
@@ -240,49 +405,46 @@ def _build_frame(
 
 
 def _compute_visible_rows(console: Console) -> int:
-    """Reserve room for panel chrome + status + keybinds; rest is rows.
-
-    Capped at ``_MAX_VISIBLE_ROWS`` so the scan report above the picker
-    (welcome panel, baseline panel, inventory, findings summary)
-    remains on-screen on normal laptop terminals. Users can scroll the
-    picker with ↑↓/PgUp/PgDn when the list exceeds the cap.
-    """
+    """Reserve room for panel chrome + status + keybinds; rest is rows."""
     height = console.size.height or 24
     available = height - _FRAME_OVERHEAD
     return max(_MIN_VISIBLE_ROWS, min(_MAX_VISIBLE_ROWS, available))
 
 
-def _move_cursor(state: _State, total: int, delta: int) -> None:
-    if total <= 0:
-        return
-    state.cursor = max(0, min(total - 1, state.cursor + delta))
-
-
 def run_rich_multiselect(
-    findings: list[Finding],
+    sections: list[Section],
     *,
     title: str,
-    preselected: set[int],
     console: Console,
-    subtitle: str | None = None,
 ) -> list[Finding]:
-    """Drive a Rich Live multiselect picker and return chosen findings.
+    """Drive a Rich Live sectioned multiselect picker and return chosen findings.
 
-    Returns ``[]`` when the user quits with ``q`` or ``Esc``. An empty
-    confirm (Enter with nothing selected) also returns ``[]``.
+    Returns ``[]`` when the user quits with ``q``/``Esc`` or confirms
+    with nothing selected. Returns ``[]`` immediately when no section
+    contains any findings.
 
-    ``subtitle`` renders right-aligned on the panel's bottom border in
-    DIM style — used for ``"Step 1 of 2"`` when a second curate picker
-    will follow. ``None`` omits the subtitle.
+    Each section renders with a dim header above its rows when its
+    ``title`` is non-empty; an empty title omits the header so a single
+    section with no title looks identical to the historical
+    flat-list picker.
+
+    ``a``/``n`` operate on the cursor's current section so users can
+    sweep one bucket (e.g. "check everything in Curate agents") without
+    touching the others. ``A``/``N`` sweep every section at once.
     """
-    if not findings:
+    rows, flat = _build_rows(sections)
+    if not flat:
         return []
 
-    state = _State(cursor=0, selected=set(preselected), viewport_top=0)
+    state = _State(
+        cursor=_first_selectable(rows),
+        selected=_initial_selected(sections),
+        viewport_top=0,
+    )
     visible_rows = _compute_visible_rows(console)
 
     with Live(
-        _build_frame(findings, state, title, visible_rows, subtitle),
+        _build_frame(rows, flat, state, title, visible_rows),
         console=console,
         screen=False,
         refresh_per_second=30,
@@ -294,37 +456,42 @@ def run_rich_multiselect(
             except KeyboardInterrupt:
                 return []
 
-            n = len(findings)
             match key:
                 case readchar.key.UP | "k":
-                    _move_cursor(state, n, -1)
+                    _move_cursor(state, rows, -1)
                 case readchar.key.DOWN | "j":
-                    _move_cursor(state, n, 1)
+                    _move_cursor(state, rows, 1)
                 case readchar.key.PAGE_UP:
-                    _move_cursor(state, n, -max(1, visible_rows - 1))
+                    _move_cursor(state, rows, -max(1, visible_rows - 1))
                 case readchar.key.PAGE_DOWN:
-                    _move_cursor(state, n, max(1, visible_rows - 1))
+                    _move_cursor(state, rows, max(1, visible_rows - 1))
                 case readchar.key.HOME | "g":
-                    state.cursor = 0
+                    state.cursor = _first_selectable(rows)
                 case readchar.key.END | "G":
-                    state.cursor = n - 1
+                    state.cursor = _last_selectable(rows)
                 case readchar.key.SPACE:
-                    state.toggle()
+                    state.toggle(rows)
                 case "a":
-                    state.invert(n)
+                    current = rows[state.cursor]
+                    if isinstance(current, _FindingRow):
+                        state.select_section(rows, current.section_idx)
                 case "A":
-                    state.select_all(n)
-                case _ if key in ("n", "N"):
+                    state.select_all(rows)
+                case "n":
+                    current = rows[state.cursor]
+                    if isinstance(current, _FindingRow):
+                        state.deselect_section(rows, current.section_idx)
+                case "N":
                     state.select_none()
                 case readchar.key.ENTER:
-                    return [findings[i] for i in sorted(state.selected)]
+                    return [flat[i] for i in sorted(state.selected)]
                 case readchar.key.ESC | "q":
                     return []
                 case readchar.key.CTRL_C:
                     return []
 
             visible_rows = _compute_visible_rows(console)
-            live.update(_build_frame(findings, state, title, visible_rows, subtitle))
+            live.update(_build_frame(rows, flat, state, title, visible_rows))
 
 
-__all__ = ["run_rich_multiselect"]
+__all__ = ["Section", "run_rich_multiselect"]

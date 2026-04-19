@@ -33,7 +33,12 @@ unclog
 
 ## Fixing things
 
-`unclog` never writes without a confirmed prompt. Conservative-safe findings are pre-checked; everything else defaults unchecked. A full snapshot is written to `~/.claude/.unclog/snapshots/<id>/` before any change.
+`unclog` never writes without a confirmed prompt. After the report, one sectioned picker opens with:
+
+- **Apply** — detector-driven fixes; conservative-safe findings start checked.
+- **Curate agents / skills / MCPs** — every local agent, skill, and remote MCP, sorted by token cost. Always starts unchecked; consent is per-item.
+
+Picker keys: `↑↓` move · `space` toggle · `a` / `A` check section / all · `n` / `N` clear section / all · `enter` apply · `q` quit. A full snapshot is written to `~/.claude/.unclog/snapshots/<id>/` before any change.
 
 ```
 unclog restore               # restore the most recent snapshot
@@ -51,11 +56,12 @@ unclog --json                # structured output (schema unclog.v0.1)
 unclog --no-probe-mcps       # skip the live MCP probe (keeps the scan read-only)
 unclog --list-claude-md      # diagnostic: list every auto-injected context file with token counts
 unclog --yes                 # apply every auto-checked finding
+unclog --verbose             # restore the full pre-picker chrome (scan-meta, tips, also-running)
 unclog --no-animation        # disable the post-apply baseline countdown
 unclog --plain               # ASCII-only, CI-safe
 ```
 
-`NO_COLOR=1` or a non-TTY pipe auto-enables `--plain`.
+`NO_COLOR=1` or a non-TTY pipe auto-enables `--plain`. The default mode trims chrome once you've seen it; pass `-v`/`--verbose` to bring it back.
 
 ## Guarantees
 

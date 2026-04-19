@@ -411,21 +411,10 @@ def test_render_plain_surfaces_heavy_hook_informational_finding() -> None:
     assert "heavy_hook" in out or "SessionStart hook fires every prompt" in out
 
 
-def test_render_rich_also_running_lists_used_mcp_and_non_heavy_hooks() -> None:
-    """Used MCPs + sound-level hooks surface in the 'also running' footer.
-
-    Without this, a heavily-used MCP like ``Roblox_Studio`` appears in
-    the composition block but is silent in findings — leaving the user
-    to wonder whether unclog even saw it. The footer is the explicit
-    acknowledgement that yes, we saw it, and it's working as intended.
-    """
-    from io import StringIO
+def _state_with_used_mcp_and_hook() -> InstallationState:
     from types import MappingProxyType
 
-    from rich.console import Console
-
     from unclog.scan.mcp_probe import ProbeResult
-    from unclog.ui.output import render_rich
 
     stdio = McpServer(
         name="Roblox_Studio",
@@ -436,16 +425,35 @@ def test_render_rich_also_running_lists_used_mcp_and_non_heavy_hooks() -> None:
     settings = Settings(
         hooks=(_hook_record("Stop", "afplay /System/Library/Sounds/Purr.aiff"),)
     )
-    probes = {"Roblox_Studio": ProbeResult(name="Roblox_Studio", ok=True, tool_count=18, tools_tokens=5371)}
-    state = _make_state(
+    probes = {
+        "Roblox_Studio": ProbeResult(
+            name="Roblox_Studio", ok=True, tool_count=18, tools_tokens=5371
+        )
+    }
+    return _make_state(
         config=config,
         settings=settings,
         mcp_probes=probes,
         mcp_invocations={"Roblox_Studio": 324},
     )
+
+
+def test_render_rich_also_running_visible_under_verbose() -> None:
+    """Verbose mode surfaces used MCPs + sound-level hooks in the 'also
+    running' footer — the explicit acknowledgement that "yes, we saw
+    Roblox_Studio, it's working as intended" for users debugging
+    silent-but-expensive infrastructure.
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    from unclog.ui.output import render_rich
+
+    state = _state_with_used_mcp_and_hook()
     buf = StringIO()
     console = Console(file=buf, width=120, force_terminal=True, record=True)
-    render_rich(state, console, show_wordmark=False)
+    render_rich(state, console, show_wordmark=False, verbose=True)
     out = console.export_text()
     assert "also running" in out
     assert "Roblox_Studio" in out
@@ -453,8 +461,28 @@ def test_render_rich_also_running_lists_used_mcp_and_non_heavy_hooks() -> None:
     assert "Stop" in out
 
 
+def test_render_rich_also_running_hidden_in_default_mode() -> None:
+    """Default mode hides the 'also running' footer even when there's
+    real content to show — every row restates a baseline-panel row, so
+    keeping it noise-free is worth more than the redundant audit trail.
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    from unclog.ui.output import render_rich
+
+    state = _state_with_used_mcp_and_hook()
+    buf = StringIO()
+    console = Console(file=buf, width=120, force_terminal=True, record=True)
+    render_rich(state, console, show_wordmark=False, verbose=False)
+    out = console.export_text()
+    assert "also running" not in out
+    assert "324 invocations" not in out
+
+
 def test_render_rich_also_running_skips_when_empty() -> None:
-    """No used MCPs and no hooks → no 'also running' block at all."""
+    """No used MCPs and no hooks → no 'also running' block, even verbose."""
     from io import StringIO
 
     from rich.console import Console
@@ -464,7 +492,7 @@ def test_render_rich_also_running_skips_when_empty() -> None:
     state = _make_state()
     buf = StringIO()
     console = Console(file=buf, width=120, force_terminal=True, record=True)
-    render_rich(state, console, show_wordmark=False)
+    render_rich(state, console, show_wordmark=False, verbose=True)
     out = console.export_text()
     assert "also running" not in out
 

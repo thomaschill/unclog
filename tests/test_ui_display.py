@@ -28,7 +28,7 @@ def test_plain_flag_forces_plain() -> None:
         env={},
     )
     assert d == DisplayOptions(
-        plain=True, colour=False, animate=False, show_wordmark=False
+        plain=True, colour=False, animate=False, show_wordmark=False, verbose=False
     )
 
 
@@ -96,5 +96,33 @@ def test_default_interactive_enables_everything() -> None:
         env={},
     )
     assert d == DisplayOptions(
-        plain=False, colour=True, animate=True, show_wordmark=True
+        plain=False, colour=True, animate=True, show_wordmark=True, verbose=False
     )
+
+
+def test_verbose_flag_propagates_when_chrome_visible() -> None:
+    d = DisplayOptions.resolve(
+        as_json=False,
+        plain_flag=False,
+        report_only=False,
+        no_animation_flag=False,
+        verbose_flag=True,
+        is_tty=True,
+        env={},
+    )
+    assert d.verbose is True
+
+
+def test_verbose_flag_dropped_when_plain() -> None:
+    """Plain/JSON paths render the same minimal text either way; verbose
+    is meaningless without the rich-panel chrome it controls."""
+    d = DisplayOptions.resolve(
+        as_json=True,
+        plain_flag=False,
+        report_only=False,
+        no_animation_flag=False,
+        verbose_flag=True,
+        is_tty=True,
+        env={},
+    )
+    assert d.verbose is False

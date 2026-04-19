@@ -1,22 +1,24 @@
 """Interactive fix flow: prompt → select → apply → summary.
 
-Two-phase flow per spec §3.1:
+Single-picker flow:
 
-1. Print the scan report, then immediately open a Rich Live multiselect
-   picker. The picker is the decision surface — no pre-prompt is needed
-   and an empty selection exits without mutating anything.
-2. After selection, confirm with ``Apply N changes? [y/N]`` (default No).
-3. On accept, create a snapshot and run :mod:`unclog.apply.runner`.
-   The result is rendered with file paths and token savings.
+1. Print the scan report, then immediately open one Rich Live sectioned
+   multiselect picker. Detector-driven fixes appear in an ``Apply``
+   section; opt-in inventory items (agents, skills, remote MCPs) appear
+   in ``Curate …`` sections below. The picker is the decision surface —
+   no pre-prompt is needed and an empty selection exits without mutating.
+2. After selection, confirm with ``Apply N change(s)? [y/N]`` (default No).
+3. On accept, create a snapshot and run :mod:`unclog.apply.runner`,
+   then render the result and a single cumulative countdown.
 
 Safety defaults (spec §3.2):
 
 - The apply confirm defaults to No — mashing enter exits cleanly.
-- Findings start unchecked regardless of detector ``auto_checked``;
-  the bulk ``A``/``a``/``n`` keybinds cover the sweep case.
-- ``--yes`` skips the picker and applies every auto-checked finding.
-  Opt-in findings are silently *excluded* — consent is still required
-  for them even in yes-mode.
+- Apply-section rows preselect from detector ``auto_checked``; curate
+  rows always start unchecked (consent is per-item).
+- ``--yes`` skips the picker and applies every auto-checked detector
+  finding. Curate items are *never* auto-applied — consent is always
+  per-item even in yes-mode.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from unclog.apply.runner import ApplyResult, apply_findings
 from unclog.findings.base import Finding
 from unclog.ui.chrome import rounded_panel, status_glyph
 from unclog.ui.countdown import animate_countdown
-from unclog.ui.picker import run_rich_multiselect
+from unclog.ui.picker import Section, run_rich_multiselect
 from unclog.ui.share import render_share_stat
 from unclog.ui.theme import ACCENT, DIM, SEVERITY_BAD, SEVERITY_OK
 from unclog.util.paths import ClaudePaths
@@ -49,13 +51,10 @@ class Prompter(Protocol):
 
     def confirm(self, message: str, default: bool) -> bool: ...
 
-    def multiselect(
+    def multiselect_sections(
         self,
-        message: str,
-        choices: list[tuple[str, Finding]],
-        defaults: set[str],
-        *,
-        subtitle: str | None = None,
+        title: str,
+        sections: list[Section],
     ) -> list[Finding]: ...
 
 
@@ -87,26 +86,17 @@ class RichPrompter:
             return default
         return answer.startswith("y")
 
-    def multiselect(
+    def multiselect_sections(
         self,
-        message: str,
-        choices: list[tuple[str, Finding]],
-        defaults: set[str],
-        *,
-        subtitle: str | None = None,
+        title: str,
+        sections: list[Section],
     ) -> list[Finding]:
-        if not choices:
+        if not any(section.findings for section in sections):
             return []
-        findings = [finding for _, finding in choices]
-        preselected = {
-            i for i, (title, _) in enumerate(choices) if title in defaults
-        }
         return run_rich_multiselect(
-            findings,
-            title=message,
-            preselected=preselected,
+            sections,
+            title=title,
             console=self._console,
-            subtitle=subtitle,
         )
 
 
@@ -134,28 +124,30 @@ def run_interactive(
     baseline_tokens: int | None = None,
     curate_findings: list[Finding] | None = None,
 ) -> ApplyResult | None:
-    """Run the interactive fix flow. Returns the last apply result, or None.
+    """Run the interactive fix flow. Returns the apply result, or None.
 
-    Two sequential decision surfaces:
+    One picker, multiple sections. Detector-driven applicable findings
+    fill the ``Apply`` section; opt-in inventory items fill ``Curate
+    agents`` / ``Curate skills`` / ``Curate MCPs`` sections. Empty
+    sections are dropped. When only one section ends up populated, its
+    title is suppressed so the picker mirrors the historical flat list.
 
-    1. **Primary picker** — detector findings (real problems). Auto-check
-       state mirrors ``Finding.auto_checked``. Confirm then apply.
-    2. **Curate picker** — opt-in secondary picker over
-       ``curate_findings`` (every local agent + skill, enumerated).
-       Offered with a y/N prompt *after* primary resolves, so users who
-       want to prune by hand aren't drowned by 200 rows at startup.
+    Flag-only findings render a separate manual-hints panel above the
+    picker — they're informational next steps that don't fit the
+    select-and-apply model.
 
-    ``None`` means no mutations happened. A non-None result is the last
-    apply's result (curate if curate ran, else primary).
+    ``None`` means no mutations happened.
     """
     curate_findings = curate_findings or []
     if not findings and not curate_findings:
         return None
 
     applicable = [f for f in findings if f.action.primitive != "flag_only"]
+    flag_only = [f for f in findings if f.action.primitive == "flag_only"]
 
-    # --yes path: apply every auto-checked primary finding non-interactively.
-    # Curate is never auto-applied — consent is always per-item.
+    # --yes path: apply every auto-checked applicable finding
+    # non-interactively. Curate is never auto-applied — consent is
+    # always per-item.
     if options.yes:
         if not applicable:
             return None
@@ -181,105 +173,22 @@ def run_interactive(
     else:
         active_prompter = prompter
 
-    # Primary flow first. When there are only informational (flag-only)
-    # findings, render the manual-remediation hints — even if curate is
-    # also available, since the hints are independent actionable next
-    # steps (".claudeignore" creation, etc.).
-    #
-    # When curate is available, defer the countdown + retention warn
-    # out of primary's _execute so the user sees one cumulative
-    # "N,NNN → M,MMM" animation at the end rather than two separate ones.
-    # Titles pick up a "Step 1 of 2 — ..." prefix only when a second
-    # curate step will actually fire, so single-step runs don't suggest
-    # the user is missing something.
-    defer_final_tally = bool(curate_findings)
-    two_step = bool(curate_findings)
-    primary_subtitle = "Step 1 of 2" if two_step else None
-    primary_result: ApplyResult | None = None
-    if applicable:
-        primary_result = _run_primary_picker(
-            applicable,
-            active_prompter=active_prompter,
-            console=console,
-            claude_home=claude_home,
-            project_paths=project_paths,
-            animate=not options.no_animation,
-            baseline_tokens=baseline_tokens,
-            include_final_tally=not defer_final_tally,
-            title="Select fixes to apply",
-            subtitle=primary_subtitle,
-        )
-    elif findings:
-        _render_informational_next_steps(findings, console)
+    # Render flag-only hints whenever they're the only thing in the
+    # findings bucket — they're independent of the picker and easy to
+    # miss otherwise.
+    if not applicable and flag_only:
+        _render_informational_next_steps(flag_only, console)
 
-    if not curate_findings:
-        return primary_result
+    sections = _build_picker_sections(applicable, curate_findings)
+    if not sections:
+        return None
 
-    primary_savings = primary_result.token_savings if primary_result is not None else 0
-    # Only label curate as "Step 2 of 2" when a primary picker was
-    # actually shown — otherwise the step numbering implies a step the
-    # user never saw.
-    curate_subtitle = "Step 2 of 2" if applicable else None
-    curate_result = _maybe_run_curate(
-        curate_findings,
-        active_prompter=active_prompter,
-        console=console,
-        claude_home=claude_home,
-        project_paths=project_paths,
-        animate=not options.no_animation,
-        baseline_tokens=baseline_tokens,
-        previous_savings=primary_savings,
-        title="Select items to delete",
-        subtitle=curate_subtitle,
-    )
-
-    # If curate was declined but primary applied, the deferred countdown
-    # still needs to fire — otherwise the user never sees the animation
-    # for their primary savings.
-    if (
-        curate_result is None
-        and primary_result is not None
-        and primary_savings
-        and baseline_tokens is not None
-    ):
-        _render_final_tally(
-            console=console,
-            claude_home=claude_home,
-            baseline_tokens=baseline_tokens,
-            tokens_saved=primary_savings,
-            animate=not options.no_animation,
-        )
-
-    return curate_result if curate_result is not None else primary_result
-
-
-def _run_primary_picker(
-    applicable: list[Finding],
-    *,
-    active_prompter: Prompter,
-    console: Console,
-    claude_home: Path,
-    project_paths: tuple[Path, ...],
-    animate: bool,
-    baseline_tokens: int | None,
-    include_final_tally: bool = True,
-    title: str = "Select fixes to apply",
-    subtitle: str | None = None,
-) -> ApplyResult | None:
-    # Sort descending by token weight so the biggest wins are at the top
-    # of the picker regardless of check state. Entries without a measured
-    # savings value sort last.
-    sorted_applicable = sorted(
-        applicable,
-        key=lambda f: (f.token_savings is None, -(f.token_savings or 0), f.title),
-    )
-    choices = [(_format_choice(f), f) for f in sorted_applicable]
-    defaults = {title_str for title_str, f in choices if f.auto_checked}
-    selected = active_prompter.multiselect(
-        title, choices=choices, defaults=defaults, subtitle=subtitle
+    selected = active_prompter.multiselect_sections(
+        "Select fixes and curate",
+        sections,
     )
     if not selected:
-        console.print("[dim]Nothing selected — continuing.[/dim]")
+        console.print("[dim]Nothing selected — exiting without changes.[/dim]")
         return None
 
     if not active_prompter.confirm(
@@ -292,76 +201,58 @@ def _run_primary_picker(
         claude_home=claude_home,
         project_paths=project_paths,
         console=console,
-        animate=animate,
+        animate=not options.no_animation,
         baseline_tokens=baseline_tokens,
-        include_final_tally=include_final_tally,
     )
 
 
-def _maybe_run_curate(
+def _build_picker_sections(
+    applicable: list[Finding],
     curate_findings: list[Finding],
-    *,
-    active_prompter: Prompter,
-    console: Console,
-    claude_home: Path,
-    project_paths: tuple[Path, ...],
-    animate: bool,
-    baseline_tokens: int | None,
-    previous_savings: int = 0,
-    title: str = "Select items to delete",
-    subtitle: str | None = None,
-) -> ApplyResult | None:
-    """Offer the opt-in per-item curate picker; return apply result or None.
+) -> list[Section]:
+    """Group findings into picker sections.
 
-    Shows a one-line summary (count + total token cost) so the user can
-    decide whether a hand-prune is worth it before opening a 200-row
-    picker. ``n``/empty answer declines quietly — the report already
-    printed, so no mutation is a valid outcome.
+    Apply section sorts by token weight desc so the biggest wins are at
+    the top regardless of check state. Curate sub-sections preserve
+    their incoming order — ``build_curate_findings`` already returns
+    them sorted by token desc, so a stable per-type partition keeps that
+    order intact.
+
+    Sections with no findings are dropped. When only one section
+    survives, its title is blanked so the picker has no header row —
+    matches the historical look for callers that only have one bucket.
     """
-    total_tokens = sum(f.token_savings or 0 for f in curate_findings)
-    summary = _format_curate_summary(curate_findings, total_tokens)
-    console.print("")
-    if not active_prompter.confirm(summary, default=False):
-        return None
-
-    choices = [(_format_choice(f), f) for f in curate_findings]
-    selected = active_prompter.multiselect(
-        title, choices=choices, defaults=set(), subtitle=subtitle
+    sorted_applicable = sorted(
+        applicable,
+        key=lambda f: (f.token_savings is None, -(f.token_savings or 0), f.title),
     )
-    if not selected:
-        console.print("[dim]Nothing selected — exiting without changes.[/dim]")
-        return None
+    agents = [f for f in curate_findings if f.type == "agent_inventory"]
+    skills = [f for f in curate_findings if f.type == "skill_inventory"]
+    mcps = [f for f in curate_findings if f.type == "unmeasured_mcp"]
 
-    if not active_prompter.confirm(
-        f"Delete {len(selected)} item(s)?", default=False
-    ):
-        return None
+    groups: list[tuple[str, list[Finding], set[int]]] = []
+    if sorted_applicable:
+        preselected = {i for i, f in enumerate(sorted_applicable) if f.auto_checked}
+        groups.append(("Apply", sorted_applicable, preselected))
+    if agents:
+        groups.append(("Curate agents", agents, set()))
+    if skills:
+        groups.append(("Curate skills", skills, set()))
+    if mcps:
+        groups.append(("Curate MCPs", mcps, set()))
 
-    return _execute(
-        selected,
-        claude_home=claude_home,
-        project_paths=project_paths,
-        console=console,
-        animate=animate,
-        baseline_tokens=baseline_tokens,
-        previous_savings=previous_savings,
-    )
+    if not groups:
+        return []
 
-
-def _format_curate_summary(findings: list[Finding], total_tokens: int) -> str:
-    n_agents = sum(1 for f in findings if f.type == "agent_inventory")
-    n_skills = sum(1 for f in findings if f.type == "skill_inventory")
-    n_mcps = sum(1 for f in findings if f.type == "unmeasured_mcp")
-    parts: list[str] = []
-    if n_agents:
-        parts.append(f"{n_agents} agent(s)")
-    if n_skills:
-        parts.append(f"{n_skills} skill(s)")
-    if n_mcps:
-        parts.append(f"{n_mcps} remote MCP(s)")
-    label = " + ".join(parts) or f"{len(findings)} item(s)"
-    tokens = f"~{total_tokens:,} tok" if total_tokens else "unmeasured"
-    return f"Review {label} one-by-one ({tokens})?"
+    suppress_title = len(groups) == 1
+    return [
+        Section(
+            title="" if suppress_title else title,
+            findings=findings,
+            preselected=preselected,
+        )
+        for title, findings, preselected in groups
+    ]
 
 
 def _execute(
@@ -372,17 +263,8 @@ def _execute(
     console: Console,
     animate: bool,
     baseline_tokens: int | None,
-    include_final_tally: bool = True,
-    previous_savings: int = 0,
 ) -> ApplyResult | None:
-    """Apply ``findings``, render the result, and optionally show the tally.
-
-    ``include_final_tally=False`` skips the countdown + share stat +
-    retention warn so the caller can show a single cumulative version
-    later. ``previous_savings`` offsets the countdown's starting point
-    so the animation represents *total session* savings, not just this
-    call's.
-    """
+    """Apply ``findings``, render the result, run the countdown."""
     paths = ClaudePaths(home=claude_home)
     result = apply_findings(
         findings,
@@ -391,52 +273,21 @@ def _execute(
         project_paths=project_paths,
     )
     _render_result(result, console)
-    if include_final_tally:
-        total_saved = previous_savings + result.token_savings
-        if baseline_tokens is not None and total_saved:
-            console.print("")
-            animate_countdown(
-                console,
-                before=baseline_tokens,
-                after=baseline_tokens - total_saved,
-                animate=animate,
-            )
-            render_share_stat(
-                console,
-                baseline_tokens=baseline_tokens,
-                tokens_saved=total_saved,
-            )
-        _maybe_warn_retention(paths, console)
+    if baseline_tokens is not None and result.token_savings:
+        console.print("")
+        animate_countdown(
+            console,
+            before=baseline_tokens,
+            after=baseline_tokens - result.token_savings,
+            animate=animate,
+        )
+        render_share_stat(
+            console,
+            baseline_tokens=baseline_tokens,
+            tokens_saved=result.token_savings,
+        )
+    _maybe_warn_retention(paths, console)
     return result
-
-
-def _render_final_tally(
-    *,
-    console: Console,
-    claude_home: Path,
-    baseline_tokens: int,
-    tokens_saved: int,
-    animate: bool,
-) -> None:
-    """Deferred countdown + retention warn for the primary-only path.
-
-    When curate is offered and declined but primary applied, we need to
-    fire the tally that primary's ``_execute`` skipped (since it was
-    waiting to be combined with curate).
-    """
-    console.print("")
-    animate_countdown(
-        console,
-        before=baseline_tokens,
-        after=baseline_tokens - tokens_saved,
-        animate=animate,
-    )
-    render_share_stat(
-        console,
-        baseline_tokens=baseline_tokens,
-        tokens_saved=tokens_saved,
-    )
-    _maybe_warn_retention(ClaudePaths(home=claude_home), console)
 
 
 def _render_result(result: ApplyResult, console: Console) -> None:
@@ -625,24 +476,6 @@ def _maybe_warn_retention(paths: ClaudePaths, console: Console) -> None:
             f"[#eab308]![/#eab308] [dim]{count} snapshots stored at "
             f"{paths.snapshots_dir} — consider pruning (coming in v0.2).[/dim]"
         )
-
-
-def _format_choice(finding: Finding) -> str:
-    """Format one row of the multiselect picker.
-
-    Token count is positioned on the LEFT (right-padded to a fixed width)
-    so any terminal-width truncation never drops the most
-    important piece of information. Example line:
-
-        4,192 tok  [global] Remove agent Frontend Developer
-    """
-    savings = (
-        f"{finding.token_savings:>6,} tok"
-        if finding.token_savings is not None
-        else "     — tok"
-    )
-    scope_kind = finding.scope.kind
-    return f"{savings}  [{scope_kind}] {finding.title}"
 
 
 def _stdin_is_tty() -> bool:
