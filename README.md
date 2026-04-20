@@ -23,6 +23,8 @@ unclog
 
 ## Remove what's costing you
 
+![unclog interactive curate flow](https://raw.githubusercontent.com/thomaschill/unclog/main/demo.gif)
+
 After the scan, one sectioned picker opens. Tick the agents / skills / MCPs you want to remove, hit `enter`, confirm once, done. A post-apply line shows how many tokens you saved and the new baseline.
 
 Picker keys: `↑↓` move · `space` toggle · `a` / `A` check section / all · `n` / `N` clear section / all · `enter` apply · `q` quit.
