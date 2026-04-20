@@ -1,98 +1,83 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
-from types import MappingProxyType
 
 import pytest
 
 from unclog.apply.primitives import ApplyError, apply_action
-from unclog.apply.snapshot import create_snapshot
 from unclog.findings.base import Action, Finding, Scope
-
-NOW = datetime(2026, 4, 17, 18, 42, tzinfo=UTC)
-
-
-def _snapshot(tmp_path: Path, claude_home: Path, project_paths: tuple[Path, ...] = ()) -> object:
-    return create_snapshot(
-        tmp_path / "snapshots",
-        claude_home=claude_home,
-        project_paths=project_paths,
-        now=NOW,
-    )
 
 
 def _finding(
     *,
     fid: str,
-    type_: str,
-    primitive: str,
+    type_: str = "agent_inventory",
+    primitive: str = "delete_file",
     path: Path | None = None,
-    heading: str | None = None,
     server_name: str | None = None,
-    plugin_key: str | None = None,
-    line_numbers: tuple[int, ...] = (),
-    evidence: dict[str, object] | None = None,
     scope: Scope | None = None,
 ) -> Finding:
     return Finding(
         id=fid,
         type=type_,  # type: ignore[arg-type]
         title="t",
-        reason="r",
         scope=scope if scope is not None else Scope(kind="global"),
         action=Action(
             primitive=primitive,  # type: ignore[arg-type]
             path=path,
-            heading=heading,
             server_name=server_name,
-            plugin_key=plugin_key,
-            line_numbers=line_numbers,
         ),
-        auto_checked=False,
-        evidence=MappingProxyType(evidence or {}),
     )
 
 
 # -- delete_file ------------------------------------------------------------
 
 
-def test_delete_file_removes_target_and_captures_bytes(tmp_path: Path) -> None:
+def test_delete_file_removes_target_file(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     skill_md = claude_home / "skills" / "ghost" / "SKILL.md"
     skill_md.parent.mkdir(parents=True)
     skill_md.write_text("body\n", encoding="utf-8")
-    snap = _snapshot(tmp_path, claude_home)
 
-    finding = _finding(
-        fid="unused_skill:ghost", type_="unused_skill", primitive="delete_file", path=skill_md
-    )
-    record = apply_action(finding, snap, claude_home=claude_home)
+    finding = _finding(fid="skill:ghost", type_="skill_inventory", path=skill_md)
+    apply_action(finding, claude_home=claude_home)
 
     assert not skill_md.exists()
-    # Parent dir is deliberately left behind — removing it loses any
-    # custom permissions the user set and makes restore less faithful.
+    # Parent dir is deliberately left behind.
     assert skill_md.parent.is_dir()
-    # Snapshot copy is preserved.
-    assert (snap.files_root / record.snapshot_path).read_text(encoding="utf-8") == "body\n"
+
+
+def test_delete_file_removes_target_directory(tmp_path: Path) -> None:
+    claude_home = tmp_path / ".claude"
+    skill_dir = claude_home / "skills" / "ghost"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("body\n", encoding="utf-8")
+
+    finding = _finding(fid="skill:ghost", type_="skill_inventory", path=skill_dir)
+    apply_action(finding, claude_home=claude_home)
+
+    assert not skill_dir.exists()
 
 
 def test_delete_file_raises_without_path(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(fid="x", type_="unused_skill", primitive="delete_file")
-    with pytest.raises(ApplyError):
-        apply_action(finding, snap, claude_home=claude_home)
+    finding = _finding(fid="x", type_="agent_inventory")
+    with pytest.raises(ApplyError, match="missing its target path"):
+        apply_action(finding, claude_home=claude_home)
+
+
+def test_delete_file_raises_when_target_missing(tmp_path: Path) -> None:
+    claude_home = tmp_path / ".claude"
+    finding = _finding(
+        fid="x", type_="agent_inventory", path=tmp_path / "ghost" / "missing.md"
+    )
+    with pytest.raises(ApplyError, match="does not exist"):
+        apply_action(finding, claude_home=claude_home)
 
 
 def test_delete_file_unlinks_symlinked_skill_dir(tmp_path: Path) -> None:
-    """Regression: ``shutil.rmtree`` refuses symlinks (GH-46010).
-
-    Plugin-installed skills arrive as symlinks into a shared cache.
-    Deleting the link must remove the pointer, not recurse into the
-    dereferenced target — and must not crash the batch.
-    """
+    """Regression: ``shutil.rmtree`` refuses symlinks (GH-46010)."""
     claude_home = tmp_path / ".claude"
     skill_dir = claude_home / "skills" / "gsap"
     skill_dir.parent.mkdir(parents=True)
@@ -101,24 +86,18 @@ def test_delete_file_unlinks_symlinked_skill_dir(tmp_path: Path) -> None:
     (backing / "SKILL.md").write_text("shared body\n", encoding="utf-8")
     skill_dir.symlink_to(backing)
 
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(
-        fid="unused_skill:gsap", type_="unused_skill", primitive="delete_file", path=skill_dir
-    )
-    record = apply_action(finding, snap, claude_home=claude_home)
+    finding = _finding(fid="skill:gsap", type_="skill_inventory", path=skill_dir)
+    apply_action(finding, claude_home=claude_home)
 
-    # Link is gone, backing asset is untouched.
+    # Link is gone, backing asset untouched.
     assert not skill_dir.exists() and not skill_dir.is_symlink()
     assert (backing / "SKILL.md").read_text(encoding="utf-8") == "shared body\n"
-    # Snapshot captured the symlink itself, not the dereferenced tree.
-    captured = snap.files_root / record.snapshot_path
-    assert captured.is_symlink()
 
 
 # -- comment_out_mcp --------------------------------------------------------
 
 
-def test_comment_out_mcp_renames_server_key(tmp_path: Path) -> None:
+def test_comment_out_mcp_renames_global_server_key(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
     config_path = claude_home / ".claude.json"
@@ -126,353 +105,50 @@ def test_comment_out_mcp_renames_server_key(tmp_path: Path) -> None:
         json.dumps({"mcpServers": {"github": {"command": "gh"}, "notion": {"command": "nt"}}}),
         encoding="utf-8",
     )
-    snap = _snapshot(tmp_path, claude_home)
     finding = _finding(
-        fid="unused_mcp:notion",
-        type_="unused_mcp",
+        fid="mcp:notion",
+        type_="mcp_inventory",
         primitive="comment_out_mcp",
         server_name="notion",
     )
-    apply_action(finding, snap, claude_home=claude_home)
+    apply_action(finding, claude_home=claude_home)
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert "notion" not in data["mcpServers"]
-    assert "__unclog_disabled__notion" in data["mcpServers"]
     assert data["mcpServers"]["__unclog_disabled__notion"]["command"] == "nt"
 
 
 def test_comment_out_mcp_raises_apply_error_on_malformed_json(tmp_path: Path) -> None:
-    """Regression: json.JSONDecodeError used to escape and kill the batch."""
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
-    config_path = claude_home / ".claude.json"
-    config_path.write_text("{not valid json,,}", encoding="utf-8")
-    snap = _snapshot(tmp_path, claude_home)
+    (claude_home / ".claude.json").write_text("{not valid json,,}", encoding="utf-8")
     finding = _finding(
-        fid="unused_mcp:x",
-        type_="unused_mcp",
+        fid="mcp:x",
+        type_="mcp_inventory",
         primitive="comment_out_mcp",
         server_name="x",
     )
     with pytest.raises(ApplyError, match="not valid JSON"):
-        apply_action(finding, snap, claude_home=claude_home)
+        apply_action(finding, claude_home=claude_home)
 
 
-def test_disable_plugin_raises_apply_error_on_malformed_json(tmp_path: Path) -> None:
+def test_comment_out_mcp_errors_when_server_missing(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
-    settings = claude_home / "settings.json"
-    settings.write_text("{not valid json", encoding="utf-8")
-    snap = _snapshot(tmp_path, claude_home)
+    (claude_home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"other": {"command": "o"}}}), encoding="utf-8"
+    )
     finding = _finding(
-        fid="stale_plugin:foo",
-        type_="stale_plugin",
-        primitive="disable_plugin",
-        plugin_key="foo",
+        fid="mcp:ghost",
+        type_="mcp_inventory",
+        primitive="comment_out_mcp",
+        server_name="ghost",
     )
-    with pytest.raises(ApplyError, match="not valid JSON"):
-        apply_action(finding, snap, claude_home=claude_home)
-
-
-# -- disable_plugin / uninstall_plugin -------------------------------------
-
-
-def test_disable_plugin_flips_setting_to_false(tmp_path: Path) -> None:
-    claude_home = tmp_path / ".claude"
-    claude_home.mkdir()
-    settings = claude_home / "settings.json"
-    settings.write_text(json.dumps({"enabledPlugins": {"foo@bar": True}}), encoding="utf-8")
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(
-        fid="stale_plugin:foo@bar",
-        type_="stale_plugin",
-        primitive="disable_plugin",
-        plugin_key="foo@bar",
-    )
-    apply_action(finding, snap, claude_home=claude_home)
-    data = json.loads(settings.read_text(encoding="utf-8"))
-    assert data["enabledPlugins"]["foo@bar"] is False
-
-
-def test_uninstall_plugin_removes_record_and_cache(tmp_path: Path) -> None:
-    claude_home = tmp_path / ".claude"
-    installed = claude_home / "plugins" / "installed_plugins.json"
-    installed.parent.mkdir(parents=True)
-    installed.write_text(
-        json.dumps({"plugins": [{"name": "foo", "version": "1"}]}), encoding="utf-8"
-    )
-    cache_dir = claude_home / "plugins" / "cache" / "foo"
-    cache_dir.mkdir(parents=True)
-    (cache_dir / "manifest.json").write_text("{}", encoding="utf-8")
-
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(
-        fid="disabled_plugin_residue:foo@bar",
-        type_="disabled_plugin_residue",
-        primitive="uninstall_plugin",
-        plugin_key="foo@bar",
-    )
-    apply_action(finding, snap, claude_home=claude_home)
-    data = json.loads(installed.read_text(encoding="utf-8"))
-    assert data["plugins"] == []
-    assert not cache_dir.exists()
-
-
-def test_uninstall_plugin_handles_v2_dict_layout(tmp_path: Path) -> None:
-    """Regression (Bug B): Claude Code v2 nests plugins under a dict keyed by ``name@marketplace``.
-
-    Before the fix, a dict-layout ``installed_plugins.json`` would
-    silently write back unchanged (the primitive only knew the flat-list
-    shape) and ``rmtree(cache/<name>)`` would miss the real location
-    ``cache/<marketplace>/<name>/<version>/``, so the plugin reappeared
-    on the next scan. The fix walks the dict layout, removes every
-    matching key, and derives the cache dir from each entry's
-    ``installPath``.
-    """
-    claude_home = tmp_path / ".claude"
-    installed = claude_home / "plugins" / "installed_plugins.json"
-    installed.parent.mkdir(parents=True)
-
-    # Match the on-disk layout: cache/<marketplace>/<name>/<version>
-    cache_version_dir = (
-        claude_home / "plugins" / "cache" / "claude-code-plugins" / "frontend-design" / "1.0.0"
-    )
-    cache_version_dir.mkdir(parents=True)
-    (cache_version_dir / "manifest.json").write_text("{}", encoding="utf-8")
-    # Sibling plugin under the SAME marketplace — must survive the uninstall.
-    sibling = (
-        claude_home / "plugins" / "cache" / "claude-code-plugins" / "other-plugin" / "2.0.0"
-    )
-    sibling.mkdir(parents=True)
-    (sibling / "keep.txt").write_text("keep me\n", encoding="utf-8")
-
-    installed.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "plugins": {
-                    "frontend-design@claude-code-plugins": [
-                        {
-                            "scope": "user",
-                            "installPath": str(cache_version_dir),
-                            "version": "1.0.0",
-                            "installedAt": "2026-01-01T00:00:00Z",
-                        }
-                    ],
-                    "other-plugin@claude-code-plugins": [
-                        {
-                            "scope": "user",
-                            "installPath": str(sibling),
-                            "version": "2.0.0",
-                        }
-                    ],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(
-        fid="disabled_plugin_residue:frontend-design@claude-code-plugins",
-        type_="disabled_plugin_residue",
-        primitive="uninstall_plugin",
-        plugin_key="frontend-design@claude-code-plugins",
-    )
-    apply_action(finding, snap, claude_home=claude_home)
-
-    data = json.loads(installed.read_text(encoding="utf-8"))
-    # Target key is gone; sibling untouched.
-    assert "frontend-design@claude-code-plugins" not in data["plugins"]
-    assert "other-plugin@claude-code-plugins" in data["plugins"]
-    # Plugin-name dir (and every version beneath it) is removed.
-    plugin_name_dir = cache_version_dir.parent
-    assert not plugin_name_dir.exists()
-    # Sibling under same marketplace is untouched.
-    assert sibling.is_dir()
-    assert (sibling / "keep.txt").read_text(encoding="utf-8") == "keep me\n"
-    # Marketplace dir still exists (holds the sibling).
-    assert (claude_home / "plugins" / "cache" / "claude-code-plugins").is_dir()
-
-
-# -- remove_claude_md_section / remove_claude_md_lines --------------------
-
-
-def test_remove_claude_md_section_strips_named_heading(tmp_path: Path) -> None:
-    md_path = tmp_path / "CLAUDE.md"
-    md_path.write_text("# Keep\nalpha\n# Drop\nbeta\n# Keep2\ngamma\n", encoding="utf-8")
-    snap = _snapshot(tmp_path, tmp_path)
-    finding = _finding(
-        fid="claude_md_duplicate:1",
-        type_="claude_md_duplicate",
-        primitive="remove_claude_md_section",
-        path=md_path,
-        heading="Drop",
-    )
-    apply_action(finding, snap, claude_home=tmp_path)
-    text = md_path.read_text(encoding="utf-8")
-    assert "Drop" not in text
-    assert "Keep" in text and "Keep2" in text
-
-
-def test_remove_claude_md_section_raises_when_heading_missing(tmp_path: Path) -> None:
-    """Regression (Fix #5): a stale heading must fail loudly, not silently no-op.
-
-    Before the fix, ``_strip_section`` returned the source unchanged when
-    the heading wasn't found, so apply_action reported success and the
-    summary showed a phantom "fixed" row the user never saw a change for.
-    """
-    md_path = tmp_path / "CLAUDE.md"
-    md_path.write_text("# Kept\nbody\n", encoding="utf-8")
-    snap = _snapshot(tmp_path, tmp_path)
-    finding = _finding(
-        fid="claude_md_duplicate:gone",
-        type_="claude_md_duplicate",
-        primitive="remove_claude_md_section",
-        path=md_path,
-        heading="Nonexistent",
-    )
-    with pytest.raises(ApplyError, match="not found"):
-        apply_action(finding, snap, claude_home=tmp_path)
-    # File untouched on failure.
-    assert md_path.read_text(encoding="utf-8") == "# Kept\nbody\n"
-
-
-def test_remove_claude_md_lines_drops_specified_lines(tmp_path: Path) -> None:
-    md_path = tmp_path / "CLAUDE.md"
-    md_path.write_text("one\n/nope/a.py\n/nope/b.py\nfour\n", encoding="utf-8")
-    snap = _snapshot(tmp_path, tmp_path)
-    finding = _finding(
-        fid="claude_md_dead_ref:line-only",
-        type_="claude_md_dead_ref",
-        primitive="remove_claude_md_lines",
-        path=md_path,
-        line_numbers=(2, 3),
-    )
-    apply_action(finding, snap, claude_home=tmp_path)
-    assert md_path.read_text(encoding="utf-8") == "one\nfour\n"
-
-
-# -- move_claude_md_section ------------------------------------------------
-
-
-def test_move_claude_md_section_cross_scope(tmp_path: Path) -> None:
-    source = tmp_path / "global_CLAUDE.md"
-    destination = tmp_path / "proj_CLAUDE.md"
-    source.write_text("# Keep\nk\n# Draper-only\nbody\n", encoding="utf-8")
-    destination.write_text("# existing\nstuff\n", encoding="utf-8")
-    snap = _snapshot(tmp_path, tmp_path)
-    finding = _finding(
-        fid="scope_mismatch:1",
-        type_="scope_mismatch_global_to_project",
-        primitive="move_claude_md_section",
-        path=source,
-        heading="Draper-only",
-        evidence={"destination_path": str(destination)},
-    )
-    apply_action(finding, snap, claude_home=tmp_path)
-    assert "Draper-only" not in source.read_text(encoding="utf-8")
-    dest_text = destination.read_text(encoding="utf-8")
-    assert "Draper-only" in dest_text
-    assert "existing" in dest_text
-
-
-def test_move_claude_md_section_creates_destination_when_missing(tmp_path: Path) -> None:
-    source = tmp_path / "global_CLAUDE.md"
-    destination = tmp_path / "new" / "CLAUDE.md"
-    source.write_text("# Move\nx\n", encoding="utf-8")
-    snap = _snapshot(tmp_path, tmp_path)
-    finding = _finding(
-        fid="scope_mismatch:2",
-        type_="scope_mismatch_global_to_project",
-        primitive="move_claude_md_section",
-        path=source,
-        heading="Move",
-        evidence={"destination_path": str(destination)},
-    )
-    apply_action(finding, snap, claude_home=tmp_path)
-    assert destination.is_file()
-    assert "# Move" in destination.read_text(encoding="utf-8")
-
-
-# -- flag_only ------------------------------------------------------------
-
-
-def test_flag_only_records_intent_without_mutating(tmp_path: Path) -> None:
-    claude_home = tmp_path / ".claude"
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(
-        fid="missing_claudeignore:proj",
-        type_="missing_claudeignore",
-        primitive="flag_only",
-    )
-    apply_action(finding, snap, claude_home=claude_home)
-    assert any(a.action == "flag_only" for a in snap.actions)
-
-
-# -- uninstall_plugin symlink safety (regression for cache-as-symlink) ------
-
-
-def test_uninstall_plugin_unlinks_symlinked_cache_dir(tmp_path: Path) -> None:
-    """Regression: a plugin manager may symlink the cache dir to a shared
-    location. ``rmtree`` refuses symlinks — same class as the skill bug —
-    so the primitive must branch to ``unlink`` for the symlink case and
-    leave the backing tree alone.
-    """
-    claude_home = tmp_path / ".claude"
-    claude_home.mkdir()
-    installed = claude_home / "plugins" / "installed_plugins.json"
-    installed.parent.mkdir(parents=True)
-    installed.write_text(
-        json.dumps({"plugins": [{"name": "acme"}]}), encoding="utf-8"
-    )
-    backing = tmp_path / "shared-plugin-cache" / "acme"
-    backing.mkdir(parents=True)
-    (backing / "marker.txt").write_text("do not touch\n", encoding="utf-8")
-    cache_link = claude_home / "plugins" / "cache" / "acme"
-    cache_link.parent.mkdir(parents=True)
-    cache_link.symlink_to(backing)
-
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(
-        fid="disabled_plugin_residue:acme@foo",
-        type_="disabled_plugin_residue",
-        primitive="uninstall_plugin",
-        plugin_key="acme@foo",
-    )
-    apply_action(finding, snap, claude_home=claude_home)
-
-    assert not cache_link.is_symlink()
-    # Backing tree untouched — deleting it would clobber other plugins
-    # that share the same cache.
-    assert (backing / "marker.txt").read_text(encoding="utf-8") == "do not touch\n"
-
-
-# -- non-UTF-8 CLAUDE.md (regression; would have corrupted bytes) -----------
-
-
-def test_remove_claude_md_section_refuses_non_utf8(tmp_path: Path) -> None:
-    claude_home = tmp_path / ".claude"
-    claude_home.mkdir()
-    md_path = claude_home / "CLAUDE.md"
-    # Windows-1252 bytes that aren't valid UTF-8.
-    md_path.write_bytes(b"# Keep\n\x95 bullet\n# Drop\nbody\n")
-    snap = _snapshot(tmp_path, claude_home)
-    finding = _finding(
-        fid="dup:1",
-        type_="claude_md_duplicate",
-        primitive="remove_claude_md_section",
-        path=md_path,
-        heading="Drop",
-    )
-    with pytest.raises(ApplyError, match="not UTF-8"):
-        apply_action(finding, snap, claude_home=claude_home)
-
-
-# -- project-scoped comment_out_mcp ----------------------------------------
+    with pytest.raises(ApplyError, match="no longer listed"):
+        apply_action(finding, claude_home=claude_home)
 
 
 def test_comment_out_mcp_renames_project_scoped_server(tmp_path: Path) -> None:
-    """Fix A: project-scoped MCP finding edits projects.<abs>.mcpServers, not root."""
+    """Project-scoped MCP finding edits projects.<abs>.mcpServers, not root."""
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
     project = tmp_path / "myproj"
@@ -494,152 +170,35 @@ def test_comment_out_mcp_renames_project_scoped_server(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    snap = _snapshot(tmp_path, claude_home, project_paths=(project,))
     finding = _finding(
-        fid="unused_mcp:proj_mcp",
-        type_="unused_mcp",
+        fid="mcp:proj_mcp",
+        type_="mcp_inventory",
         primitive="comment_out_mcp",
         server_name="proj_mcp",
         scope=Scope(kind="project", project_path=project),
     )
-    apply_action(finding, snap, claude_home=claude_home)
+    apply_action(finding, claude_home=claude_home)
     data = json.loads(config_path.read_text(encoding="utf-8"))
-    # Global section must be untouched — this is the regression.
     assert data["mcpServers"] == {"global_only": {"command": "g"}}
     proj_servers = data["projects"][str(project)]["mcpServers"]
     assert "proj_mcp" not in proj_servers
     assert "__unclog_disabled__proj_mcp" in proj_servers
-    assert proj_servers["other"] == {"command": "o"}
 
 
 def test_comment_out_mcp_errors_when_project_missing_from_config(tmp_path: Path) -> None:
-    """Project-scoped finding must fail cleanly if the key has been removed."""
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
     project = tmp_path / "gone"
     project.mkdir()
-    config_path = claude_home / ".claude.json"
-    config_path.write_text(
-        json.dumps({"mcpServers": {}, "projects": {}}),
-        encoding="utf-8",
+    (claude_home / ".claude.json").write_text(
+        json.dumps({"mcpServers": {}, "projects": {}}), encoding="utf-8"
     )
-    snap = _snapshot(tmp_path, claude_home, project_paths=(project,))
     finding = _finding(
-        fid="unused_mcp:ghost",
-        type_="unused_mcp",
+        fid="mcp:ghost",
+        type_="mcp_inventory",
         primitive="comment_out_mcp",
         server_name="ghost",
         scope=Scope(kind="project", project_path=project),
     )
     with pytest.raises(ApplyError, match="no longer in"):
-        apply_action(finding, snap, claude_home=claude_home)
-
-
-# -- capture_file dedupe ----------------------------------------------------
-
-
-def test_two_disable_plugin_actions_preserve_true_original(tmp_path: Path) -> None:
-    """Fix B: two captures of settings.json keep first-capture bytes.
-
-    Two disable_plugin actions both capture settings.json. Before the
-    fix, the second capture overwrote the first with post-first-mutation
-    bytes, so restore could only reach "after plugin A was disabled"
-    state, not the true original "both enabled" state.
-    """
-    claude_home = tmp_path / ".claude"
-    claude_home.mkdir()
-    settings = claude_home / "settings.json"
-    original = {"enabledPlugins": {"a@m": True, "b@m": True}}
-    settings.write_text(json.dumps(original), encoding="utf-8")
-    snap = _snapshot(tmp_path, claude_home)
-
-    f1 = _finding(
-        fid="stale_plugin:a",
-        type_="stale_plugin",
-        primitive="disable_plugin",
-        plugin_key="a@m",
-    )
-    f2 = _finding(
-        fid="stale_plugin:b",
-        type_="stale_plugin",
-        primitive="disable_plugin",
-        plugin_key="b@m",
-    )
-    apply_action(f1, snap, claude_home=claude_home)
-    apply_action(f2, snap, claude_home=claude_home)
-
-    # After both actions, live file has both disabled — that's expected.
-    live = json.loads(settings.read_text(encoding="utf-8"))
-    assert live["enabledPlugins"] == {"a@m": False, "b@m": False}
-
-    # The snapshot copy must still hold the true original (both True).
-    rel = snap.actions[0].snapshot_path
-    snap_bytes = (snap.files_root / rel).read_text(encoding="utf-8")
-    assert json.loads(snap_bytes) == original
-
-
-# -- move_claude_md_section destination sandbox -----------------------------
-
-
-def test_move_claude_md_section_refuses_external_destination(tmp_path: Path) -> None:
-    """Fix C: destination outside capture roots is refused before writing.
-
-    A tampered finding whose evidence.destination_path points outside
-    claude_home + project_paths used to write a file restore couldn't
-    clean up (no action record existed for it). Capture is now called
-    unconditionally; _relative_snapshot_path raises SnapshotError.
-    """
-    claude_home = tmp_path / ".claude"
-    claude_home.mkdir()
-    project = tmp_path / "proj"
-    project.mkdir()
-    source = project / "CLAUDE.md"
-    source.write_text("# Heading X\n\nbody\n", encoding="utf-8")
-
-    external_destination = tmp_path / "outside" / "hijack.md"
-    snap = _snapshot(tmp_path, claude_home, project_paths=(project,))
-    finding = _finding(
-        fid="scope_mismatch:x",
-        type_="scope_mismatch_project_to_global",
-        primitive="move_claude_md_section",
-        path=source,
-        heading="Heading X",
-        evidence={"destination_path": str(external_destination)},
-    )
-    with pytest.raises(Exception, match="outside claude_home"):
-        apply_action(finding, snap, claude_home=claude_home)
-    # External file must not have been created.
-    assert not external_destination.exists()
-    # Source must be untouched (capture_file raised before strip).
-    assert source.read_text(encoding="utf-8") == "# Heading X\n\nbody\n"
-
-
-# -- ApplyError messages are user-facing (Fix #6) ---------------------------
-
-
-def test_apply_error_messages_have_no_finding_id_jargon(tmp_path: Path) -> None:
-    """Regression (Fix #6): ApplyError text must not leak ``(finding X)`` jargon.
-
-    Every ApplyError surfaces directly in the apply summary panel. The
-    ``(finding some_id)`` suffix used to be appended to nearly every
-    message ("primitive foo requires bar (finding unused_mcp:notion)")
-    and duplicated the id that's already shown in the failing row.
-    """
-    claude_home = tmp_path / ".claude"
-    claude_home.mkdir()
-    snap = _snapshot(tmp_path, claude_home)
-    # Exercise a few distinct error paths; each should render a clean
-    # sentence without the legacy jargon.
-    cases: list[Finding] = [
-        _finding(fid="a", type_="unused_skill", primitive="delete_file"),
-        _finding(fid="b", type_="unused_mcp", primitive="comment_out_mcp"),
-        _finding(fid="c", type_="stale_plugin", primitive="disable_plugin"),
-        _finding(fid="d", type_="claude_md_duplicate", primitive="remove_claude_md_section"),
-        _finding(fid="e", type_="claude_md_dead_ref", primitive="remove_claude_md_lines"),
-    ]
-    for finding in cases:
-        with pytest.raises(ApplyError) as exc_info:
-            apply_action(finding, snap, claude_home=claude_home)
-        message = str(exc_info.value)
-        assert "(finding " not in message, f"jargon leaked: {message!r}"
-        assert "finding {" not in message
+        apply_action(finding, claude_home=claude_home)

@@ -1,53 +1,53 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
+
+import pytest
 
 from unclog.findings.base import Action, Finding, Scope
 
 
-def test_scope_json_includes_project_path_when_present() -> None:
-    assert Scope(kind="global").to_json() == {"kind": "global"}
-    payload = Scope(kind="project", project_path=Path("/p")).to_json()
-    assert payload == {"kind": "project", "project_path": "/p"}
+def test_scope_is_frozen_and_carries_optional_project_path() -> None:
+    global_scope = Scope(kind="global")
+    assert global_scope.project_path is None
+    scoped = Scope(kind="project", project_path=Path("/p"))
+    assert scoped.project_path == Path("/p")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        scoped.kind = "global"  # type: ignore[misc]
 
 
-def test_action_json_omits_unset_optional_fields() -> None:
-    assert Action(primitive="flag_only").to_json() == {"primitive": "flag_only"}
-    payload = Action(
-        primitive="delete_file",
+def test_action_defaults_allow_primitive_only() -> None:
+    action = Action(primitive="delete_file")
+    assert action.path is None
+    assert action.server_name is None
+
+
+def test_action_carries_path_and_server_name() -> None:
+    action = Action(
+        primitive="comment_out_mcp",
         path=Path("/x.md"),
         server_name="github",
-        plugin_key="plugin@market",
-        heading="Hello",
-        line_numbers=(1, 2),
-    ).to_json()
-    assert payload == {
-        "primitive": "delete_file",
-        "path": "/x.md",
-        "server_name": "github",
-        "plugin_key": "plugin@market",
-        "heading": "Hello",
-        "line_numbers": [1, 2],
-    }
+    )
+    assert action.path == Path("/x.md")
+    assert action.server_name == "github"
 
 
-def test_finding_json_roundtrip_has_stable_keys() -> None:
+def test_finding_token_savings_optional() -> None:
     finding = Finding(
-        id="unused_command:ship",
-        type="unused_command",
-        title="Remove /ship",
-        reason="0 uses in 120d",
+        id="agent:ship",
+        type="agent_inventory",
+        title="curate ship",
         scope=Scope(kind="global"),
         action=Action(primitive="delete_file", path=Path("/x/ship.md")),
-        auto_checked=True,
-        token_savings=42,
-        evidence={"age_days": 120},
     )
-    payload = finding.to_json()
-    assert payload["id"] == "unused_command:ship"
-    assert payload["type"] == "unused_command"
-    assert payload["action"]["primitive"] == "delete_file"
-    assert payload["scope"]["kind"] == "global"
-    assert payload["auto_checked"] is True
-    assert payload["token_savings"] == 42
-    assert payload["evidence"] == {"age_days": 120}
+    assert finding.token_savings is None
+    measured = Finding(
+        id="mcp:ship",
+        type="mcp_inventory",
+        title="curate ship",
+        scope=Scope(kind="global"),
+        action=Action(primitive="comment_out_mcp", server_name="ship"),
+        token_savings=4200,
+    )
+    assert measured.token_savings == 4200

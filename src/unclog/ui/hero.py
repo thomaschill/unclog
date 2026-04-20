@@ -27,15 +27,9 @@ DEFAULT_TREEMAP_WIDTH = 76
 
 # Pre-compiled regexes that translate the machine-readable ``source``
 # strings from :func:`unclog.ui.output.build_composition` into the
-# constituent parts we need for a human-friendly row label. JSON /
-# --plain output still carry the raw ``source`` — this is display-layer
-# only.
-_PLUGIN_SOURCE_RE = re.compile(
-    r"^plugin:(?P<key>[^:]+):bundled \(n_skills=(?P<skills>\d+), n_agents=(?P<agents>\d+)\)$"
-)
+# parts we need for a human-friendly row label.
 _SKILL_SOURCE_RE = re.compile(r"^skills:descriptions \(n=(?P<n>\d+)\)$")
 _AGENT_SOURCE_RE = re.compile(r"^agents:descriptions \(n=(?P<n>\d+)\)$")
-_MEMORY_SOURCE_RE = re.compile(r"^auto-memory \(n=(?P<n>\d+)\)$")
 _MCP_SOURCE_RE = re.compile(r"^mcp:(?P<name>.+)$")
 
 
@@ -110,15 +104,8 @@ def _append_composition_label(text: Text, entry: dict[str, Any]) -> None:
 
     - ``skills:descriptions (n=22)`` → ``22 skills``
     - ``agents:descriptions (n=156)`` → ``156 agents``
-    - ``plugin:foo@bar:bundled (n_skills=18, n_agents=1)`` →
-      ``plugin foo  18 skills · 1 agent``
-    - ``auto-memory (n=6)`` → ``auto-memory  6 files``
     - ``mcp:name`` → ``mcp name``
     - anything else → the raw source
-
-    The count term is rendered bold so it sits on the same visual rail as
-    the token count; trailing breakdown info is DIM. JSON / --plain
-    output are untouched — this is a render-time pretty-print.
     """
     source = str(entry.get("source", ""))
 
@@ -129,29 +116,6 @@ def _append_composition_label(text: Text, entry: dict[str, Any]) -> None:
     if m := _AGENT_SOURCE_RE.match(source):
         text.append(m["n"], style="bold default")
         text.append(" agents", style=DIM)
-        return
-    if m := _MEMORY_SOURCE_RE.match(source):
-        text.append("auto-memory", style="default")
-        text.append("  ", style=DIM)
-        text.append(m["n"], style="bold default")
-        text.append(" files", style=DIM)
-        return
-    if m := _PLUGIN_SOURCE_RE.match(source):
-        # Strip the ``@marketplace`` suffix for display — it's noisy
-        # (the only marketplace most users have is the plugin's own key)
-        # and disambiguation stays in the raw ``source`` for JSON output.
-        name = m["key"].split("@", 1)[0]
-        skills = int(m["skills"])
-        agents = int(m["agents"])
-        text.append("plugin ", style=DIM)
-        text.append(name, style="default")
-        parts: list[str] = []
-        if skills:
-            parts.append(f"{skills} skill{'s' if skills != 1 else ''}")
-        if agents:
-            parts.append(f"{agents} agent{'s' if agents != 1 else ''}")
-        if parts:
-            text.append(f"  {' · '.join(parts)}", style=DIM)
         return
     if m := _MCP_SOURCE_RE.match(source):
         text.append("mcp ", style=DIM)

@@ -6,12 +6,12 @@
 
 # vhs requires an Output directive; route the throwaway GIF to /tmp
 # since we only want the PNG for the README hero.
-Output /tmp/unclog-screenshot-throwaway.gif
+Output "/tmp/unclog-screenshot-throwaway.gif"
 
 Set Shell "zsh"
 Set FontSize 14
-Set Width 1400
-Set Height 800
+Set Width 960
+Set Height 640
 Set Padding 20
 Set TypingSpeed 40ms
 
@@ -28,7 +28,7 @@ Type "unclog"
 Sleep 400ms
 Enter
 
-# Wait for scan + MCP probe + render + picker mount
-Sleep 8s
+# Wait for scan + render + picker mount (no probe in 0.2)
+Sleep 3s
 
 Screenshot screenshot.png

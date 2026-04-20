@@ -8,8 +8,6 @@ preselection translation, and bulk selection helpers.
 
 from __future__ import annotations
 
-from types import MappingProxyType
-
 from unclog.findings.base import Action, Finding, Scope
 from unclog.ui.picker import (
     Section,
@@ -29,12 +27,9 @@ def _f(fid: str, ftype: str = "agent_inventory", tokens: int | None = None) -> F
         id=fid,
         type=ftype,  # type: ignore[arg-type]
         title=f"title {fid}",
-        reason="r",
         scope=Scope(kind="global"),
         action=Action(primitive="delete_file", path=None),
-        auto_checked=False,
         token_savings=tokens,
-        evidence=MappingProxyType({}),
     )
 
 

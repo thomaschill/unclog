@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -8,7 +7,7 @@ from types import MappingProxyType
 from unclog.findings.curate import build_curate_findings
 from unclog.scan.config import ClaudeConfig, McpServer, ProjectRecord
 from unclog.scan.filesystem import Agent, Skill
-from unclog.state import GlobalScope, InstallationState
+from unclog.state import InstallationState
 
 
 def _state_with(
@@ -16,23 +15,17 @@ def _state_with(
     agents: tuple[Agent, ...] = (),
     skills: tuple[Skill, ...] = (),
     config: ClaudeConfig | None = None,
+    mcp_session_tokens: dict[str, int] | None = None,
     claude_home: Path = Path("/tmp/claude"),
 ) -> InstallationState:
-    gs = GlobalScope(
-        claude_home=claude_home,
-        config=config,
-        settings=None,
-        claude_md_bytes=0,
-        claude_md_text="",
-        claude_local_md_bytes=0,
-        claude_local_md_text="",
-        agents=agents,
-        skills=skills,
-    )
     return InstallationState(
         generated_at=datetime.now(tz=UTC),
         claude_home=claude_home,
-        global_scope=gs,
+        config=config,
+        settings=None,
+        agents=agents,
+        skills=skills,
+        mcp_session_tokens=MappingProxyType(dict(mcp_session_tokens or {})),
     )
 
 
@@ -72,9 +65,7 @@ def test_build_curate_findings_enumerates_agents_and_skills() -> None:
         skills=(_skill("beta", "beta skill description"),),
     )
     findings = build_curate_findings(state)
-    assert len(findings) == 2
-    types = {f.type for f in findings}
-    assert types == {"agent_inventory", "skill_inventory"}
+    assert {f.type for f in findings} == {"agent_inventory", "skill_inventory"}
 
 
 def test_build_curate_findings_sorts_by_tokens_descending() -> None:
@@ -89,10 +80,8 @@ def test_build_curate_findings_sorts_by_tokens_descending() -> None:
         ),
     )
     findings = build_curate_findings(state)
-    assert findings[0].id == "agent_inventory:huge"
-    assert findings[1].id == "agent_inventory:tiny"
-    # Every curate finding must be explicitly opt-in.
-    assert all(f.auto_checked is False for f in findings)
+    assert findings[0].id == "agent:huge"
+    assert findings[1].id == "agent:tiny"
 
 
 def test_build_curate_findings_uses_delete_file_action_on_correct_target(tmp_path: Path) -> None:
@@ -110,28 +99,11 @@ def test_build_curate_findings_uses_delete_file_action_on_correct_target(tmp_pat
     assert by_type["skill_inventory"].action.path == skill_dir
 
 
-def test_build_curate_findings_handles_missing_description() -> None:
-    state = _state_with(agents=(replace(_agent("x", ""), description=None),))
-    findings = build_curate_findings(state)
-    assert len(findings) == 1
-    assert findings[0].reason == "no description"
-
-
-def test_build_curate_findings_includes_remote_mcps_as_comment_out() -> None:
-    """SSE/HTTP MCPs surface as curate rows with ``comment_out_mcp`` action.
-
-    Without this, remote MCPs were completely invisible to users — we
-    couldn't probe them locally, so a detector had no signal to fire on.
-    Landing them in curate lets users kill unused remotes with one click
-    even when we can't measure their token cost.
-    """
+def test_build_curate_findings_includes_every_mcp_as_comment_out() -> None:
+    """Every declared MCP (local + remote) surfaces as a curate row."""
     http = McpServer(
         name="polymarket-docs",
         raw=MappingProxyType({"type": "http", "url": "https://docs.polymarket.com/mcp"}),
-    )
-    sse = McpServer(
-        name="sse-server",
-        raw=MappingProxyType({"type": "sse", "url": "https://mcp.deepwiki.com/sse"}),
     )
     stdio = McpServer(
         name="Roblox_Studio",
@@ -139,35 +111,39 @@ def test_build_curate_findings_includes_remote_mcps_as_comment_out() -> None:
         raw=MappingProxyType({"type": "stdio", "command": "/path/cmd"}),
     )
     config = ClaudeConfig(
-        mcp_servers=MappingProxyType(
-            {"polymarket-docs": http, "sse-server": sse, "Roblox_Studio": stdio}
-        )
+        mcp_servers=MappingProxyType({"polymarket-docs": http, "Roblox_Studio": stdio}),
     )
     findings = build_curate_findings(_state_with(config=config))
-    unmeasured = [f for f in findings if f.type == "unmeasured_mcp"]
-    assert sorted(f.action.server_name for f in unmeasured) == [
-        "polymarket-docs",
-        "sse-server",
-    ]
-    assert all(f.action.primitive == "comment_out_mcp" for f in unmeasured)
-    assert all(f.token_savings is None for f in unmeasured)
+    mcps = [f for f in findings if f.type == "mcp_inventory"]
+    assert sorted(f.action.server_name for f in mcps) == ["Roblox_Studio", "polymarket-docs"]
+    assert all(f.action.primitive == "comment_out_mcp" for f in mcps)
 
 
-def test_build_curate_findings_dedupes_remote_mcp_across_projects() -> None:
-    """Same remote MCP in N projects collapses to one curate row."""
-    http = McpServer(
-        name="polymarket-docs",
-        raw=MappingProxyType({"type": "http", "url": "https://docs.polymarket.com/mcp"}),
+def test_build_curate_findings_attaches_session_tokens_to_mcp() -> None:
+    """When session attribution is present, the finding carries token_savings."""
+    stdio = McpServer(name="Roblox_Studio", command="x")
+    config = ClaudeConfig(mcp_servers=MappingProxyType({"Roblox_Studio": stdio}))
+    findings = build_curate_findings(
+        _state_with(config=config, mcp_session_tokens={"Roblox_Studio": 4500}),
     )
+    mcp = next(f for f in findings if f.type == "mcp_inventory")
+    assert mcp.token_savings == 4500
+
+
+def test_build_curate_findings_dedupes_mcp_across_projects_preferring_global() -> None:
+    """Same MCP in multiple projects collapses to one row; global scope wins."""
+    stdio = McpServer(name="shared", command="x")
     p1 = ProjectRecord(
-        path=Path("/a"),
-        mcp_servers=MappingProxyType({"polymarket-docs": http}),
+        path=Path("/a"), mcp_servers=MappingProxyType({"shared": stdio})
     )
     p2 = ProjectRecord(
-        path=Path("/b"),
-        mcp_servers=MappingProxyType({"polymarket-docs": http}),
+        path=Path("/b"), mcp_servers=MappingProxyType({"shared": stdio})
     )
-    config = ClaudeConfig(projects=MappingProxyType({Path("/a"): p1, Path("/b"): p2}))
+    config = ClaudeConfig(
+        mcp_servers=MappingProxyType({"shared": stdio}),
+        projects=MappingProxyType({Path("/a"): p1, Path("/b"): p2}),
+    )
     findings = build_curate_findings(_state_with(config=config))
-    unmeasured = [f for f in findings if f.type == "unmeasured_mcp"]
-    assert len(unmeasured) == 1
+    mcps = [f for f in findings if f.type == "mcp_inventory"]
+    assert len(mcps) == 1
+    assert mcps[0].scope.kind == "global"

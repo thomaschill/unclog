@@ -1,18 +1,18 @@
-# unclog demo — interactive fix flow
+# unclog demo — interactive curate flow
 #
 # Run with: vhs demo.tape
 # Output:   demo.gif
 #
 # Drives the single sectioned picker: scrolls a few rows, toggles a
-# few items, submits, and declines the apply confirm. Nothing is
-# written to disk.
+# few items, submits, and declines the "Delete N item(s)?" confirm.
+# Nothing is written to disk.
 
-Output demo.gif
+Output "demo.gif"
 
 Set Shell "zsh"
 Set FontSize 14
-Set Width 1400
-Set Height 800
+Set Width 960
+Set Height 640
 Set Padding 20
 Set TypingSpeed 40ms
 
@@ -29,8 +29,8 @@ Type "unclog"
 Sleep 400ms
 Enter
 
-# Wait for scan + MCP probe + render + picker mount
-Sleep 8s
+# Wait for scan + render + picker mount (no probe in 0.2)
+Sleep 3s
 
 # Move cursor down through the picker — viewer sees highlight travel
 Down
@@ -68,7 +68,7 @@ Sleep 900ms
 Enter
 Sleep 1200ms
 
-# "Apply N change(s)? [y/N]" — decline; nothing is written.
+# "Delete N item(s)? This cannot be undone. [y/N]" — decline; nothing is written.
 Type "n"
 Sleep 300ms
 Enter

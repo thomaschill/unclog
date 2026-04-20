@@ -59,24 +59,11 @@ from unclog.ui.theme import ACCENT, DIM
 
 # Category → (short badge label, badge colour). Each finding type is
 # rendered with a consistent badge so the user can scan the picker by
-# colour and instantly see the split between agents, skills, plugins,
-# and MCPs without reading every row.
+# colour and see agents/skills/MCPs at a glance without reading rows.
 _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
-    "stale_plugin": ("plugin", "#e879f9"),
-    "disabled_plugin_residue": ("residue", "#f472b6"),
-    "dead_mcp": ("mcp", "#fb923c"),
-    "unused_mcp": ("mcp", "#fb923c"),
-    "failed_mcp_probe": ("mcp", "#fb923c"),
-    "unmeasured_mcp": ("mcp", "#fb923c"),
-    "missing_claudeignore": ("ignore", "#facc15"),
-    "claude_md_duplicate": ("md-dup", "#fca5a5"),
-    "scope_mismatch_global_to_project": ("scope", "#a3a3a3"),
-    "scope_mismatch_project_to_global": ("scope", "#a3a3a3"),
-    # Curate-picker types. Different palette from detector badges so
-    # the user can tell at a glance this picker is "pick-what-to-prune"
-    # rather than "fix-detected-problems".
     "agent_inventory": ("agent", "#60a5fa"),
     "skill_inventory": ("skill", "#2dd4bf"),
+    "mcp_inventory": ("mcp", "#fb923c"),
 }
 
 _DEFAULT_BADGE = ("other", "#9ca3af")
