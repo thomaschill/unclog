@@ -1,4 +1,4 @@
-"""Build the picker's inventory: every agent, skill, and MCP server.
+"""Build the picker's inventory: every agent, skill, command, and MCP server.
 
 Plugin-bundled agents/skills are excluded — they reinstall on the next
 plugin update, so deleting individual files is the wrong action.
@@ -41,6 +41,20 @@ def build_curate_findings(state: InstallationState) -> list[Finding]:
                 title=skill.name,
                 scope=Scope(kind="global"),
                 action=Action(primitive="delete_file", path=skill.directory),
+                token_savings=tokens if tokens > 0 else None,
+            )
+        )
+
+    for command in state.commands:
+        descriptor = f"{command.name}: {command.description or ''}"
+        tokens = counter.count(descriptor)
+        findings.append(
+            Finding(
+                id=f"command:{command.slug}",
+                type="command_inventory",
+                title=command.name,
+                scope=Scope(kind="global"),
+                action=Action(primitive="delete_file", path=command.path),
                 token_savings=tokens if tokens > 0 else None,
             )
         )

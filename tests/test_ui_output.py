@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 from rich.console import Console
 
-from unclog.scan.filesystem import Agent, Skill
+from unclog.scan.filesystem import Agent, Command, Skill
 from unclog.state import InstallationState
 from unclog.ui.output import baseline_tokens, build_composition, render_header
 
@@ -16,6 +16,7 @@ def _state(
     *,
     agents: tuple[Agent, ...] = (),
     skills: tuple[Skill, ...] = (),
+    commands: tuple[Command, ...] = (),
     mcp_session_tokens: dict[str, int] | None = None,
 ) -> InstallationState:
     home = tmp_path / ".claude"
@@ -27,6 +28,7 @@ def _state(
         settings=None,
         agents=agents,
         skills=skills,
+        commands=commands,
         mcp_session_tokens=MappingProxyType(dict(mcp_session_tokens or {})),
     )
 
@@ -57,6 +59,17 @@ def _skill(slug: str, description: str) -> Skill:
     )
 
 
+def _command(slug: str, description: str) -> Command:
+    return Command(
+        name=slug,
+        slug=slug,
+        path=Path(f"/tmp/claude/commands/{slug}.md"),
+        description=description,
+        frontmatter_bytes=len(description),
+        body_bytes=50,
+    )
+
+
 # -- build_composition ------------------------------------------------------
 
 
@@ -69,11 +82,13 @@ def test_build_composition_emits_one_row_per_bucket(tmp_path: Path) -> None:
         tmp_path,
         agents=(_agent("alpha", "does alpha things"),),
         skills=(_skill("beta", "beta skill description"),),
+        commands=(_command("ship", "ships the branch"),),
         mcp_session_tokens={"polymarket": 1200, "roblox": 800},
     )
     sources = [e["source"] for e in build_composition(state)]
     assert "agents:descriptions (n=1)" in sources
     assert "skills:descriptions (n=1)" in sources
+    assert "commands:descriptions (n=1)" in sources
     assert "mcp:polymarket" in sources
     assert "mcp:roblox" in sources
 

@@ -6,7 +6,7 @@ from types import MappingProxyType
 
 from unclog.findings.curate import build_curate_findings
 from unclog.scan.config import ClaudeConfig, McpServer, ProjectRecord
-from unclog.scan.filesystem import Agent, Skill
+from unclog.scan.filesystem import Agent, Command, Skill
 from unclog.state import InstallationState
 
 
@@ -14,6 +14,7 @@ def _state_with(
     *,
     agents: tuple[Agent, ...] = (),
     skills: tuple[Skill, ...] = (),
+    commands: tuple[Command, ...] = (),
     config: ClaudeConfig | None = None,
     mcp_session_tokens: dict[str, int] | None = None,
     claude_home: Path = Path("/tmp/claude"),
@@ -25,6 +26,7 @@ def _state_with(
         settings=None,
         agents=agents,
         skills=skills,
+        commands=commands,
         mcp_session_tokens=MappingProxyType(dict(mcp_session_tokens or {})),
     )
 
@@ -52,6 +54,17 @@ def _skill(slug: str, description: str, directory: Path | None = None) -> Skill:
         frontmatter_bytes=len(description),
         body_bytes=100,
         total_dir_bytes=500,
+    )
+
+
+def _command(slug: str, description: str | None, path: Path | None = None) -> Command:
+    return Command(
+        name=slug,
+        slug=slug,
+        path=path or Path(f"/tmp/claude/commands/{slug}.md"),
+        description=description,
+        frontmatter_bytes=len(description) if description else 0,
+        body_bytes=50,
     )
 
 
@@ -87,9 +100,11 @@ def test_build_curate_findings_sorts_by_tokens_descending() -> None:
 def test_build_curate_findings_uses_delete_file_action_on_correct_target(tmp_path: Path) -> None:
     agent_path = tmp_path / "agents" / "foo.md"
     skill_dir = tmp_path / "skills" / "bar"
+    command_path = tmp_path / "commands" / "baz.md"
     state = _state_with(
         agents=(_agent("foo", "desc", path=agent_path),),
         skills=(_skill("bar", "desc", directory=skill_dir),),
+        commands=(_command("baz", "desc", path=command_path),),
     )
     findings = build_curate_findings(state)
     by_type = {f.type: f for f in findings}
@@ -97,6 +112,26 @@ def test_build_curate_findings_uses_delete_file_action_on_correct_target(tmp_pat
     assert by_type["agent_inventory"].action.path == agent_path
     assert by_type["skill_inventory"].action.primitive == "delete_file"
     assert by_type["skill_inventory"].action.path == skill_dir
+    assert by_type["command_inventory"].action.primitive == "delete_file"
+    assert by_type["command_inventory"].action.path == command_path
+
+
+def test_build_curate_findings_enumerates_commands() -> None:
+    state = _state_with(commands=(_command("ship", "Ship the current branch"),))
+    findings = build_curate_findings(state)
+    assert len(findings) == 1
+    assert findings[0].type == "command_inventory"
+    assert findings[0].id == "command:ship"
+    assert findings[0].title == "ship"
+    assert findings[0].token_savings is not None and findings[0].token_savings > 0
+
+
+def test_build_curate_findings_handles_command_without_description() -> None:
+    state = _state_with(commands=(_command("plain", None),))
+    findings = build_curate_findings(state)
+    assert len(findings) == 1
+    # Bare name still yields a small positive token count from tiktoken.
+    assert findings[0].token_savings is not None
 
 
 def test_build_curate_findings_includes_every_mcp_as_comment_out() -> None:

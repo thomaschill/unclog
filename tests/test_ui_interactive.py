@@ -138,9 +138,13 @@ def test_picker_partitions_by_type(tmp_path: Path) -> None:
     skill_md = tmp_path / "skills" / "bar" / "SKILL.md"
     skill_md.parent.mkdir(parents=True)
     skill_md.write_text("s\n", encoding="utf-8")
+    command_md = tmp_path / "commands" / "ship.md"
+    command_md.parent.mkdir(parents=True)
+    command_md.write_text("c\n", encoding="utf-8")
     curate = [
         _curate(agent_md, ftype="agent_inventory"),
         _curate(skill_md, ftype="skill_inventory"),
+        _curate(command_md, ftype="command_inventory"),
     ]
     prompter = FakePrompter(multiselect_answer=[])
     run_interactive(
@@ -151,7 +155,11 @@ def test_picker_partitions_by_type(tmp_path: Path) -> None:
         prompter=prompter,
     )
     _, sections = prompter.multiselect_calls[0]
-    assert [s.title for s in sections] == ["Curate agents", "Curate skills"]
+    assert [s.title for s in sections] == [
+        "Curate agents",
+        "Curate skills",
+        "Curate commands",
+    ]
 
 
 def test_single_type_picker_suppresses_section_title(tmp_path: Path) -> None:
@@ -170,6 +178,44 @@ def test_single_type_picker_suppresses_section_title(tmp_path: Path) -> None:
     _, sections = prompter.multiselect_calls[0]
     assert len(sections) == 1
     assert sections[0].title == ""
+
+
+# -- star callout -----------------------------------------------------------
+
+
+def test_star_line_shows_once_then_is_suppressed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-apply star line renders on first success, never again."""
+    from unclog.util.paths import claude_home as _claude_home
+
+    claude_root = tmp_path / ".claude"
+    claude_root.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude_root))
+    _claude_home.cache_clear()
+
+    def _run_once(file_name: str) -> str:
+        agent_md = tmp_path / "agents" / file_name
+        agent_md.parent.mkdir(parents=True, exist_ok=True)
+        agent_md.write_text("a\n", encoding="utf-8")
+        curate = [_curate(agent_md, tokens=100)]
+        console = Console(record=True, width=120)
+        prompter = FakePrompter(confirm_answers=[True], multiselect_answer=curate)
+        run_interactive(
+            curate,
+            claude_home=claude_root,
+            console=console,
+            baseline_tokens=1000,
+            prompter=prompter,
+        )
+        return console.export_text()
+
+    first_output = _run_once("first.md")
+    assert "Star it on GitHub" in first_output
+    assert (claude_root / ".unclog" / "star_shown").exists()
+
+    second_output = _run_once("second.md")
+    assert "Star it on GitHub" not in second_output
 
 
 # -- RichPrompter.confirm semantics -----------------------------------------

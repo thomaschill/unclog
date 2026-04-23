@@ -23,6 +23,7 @@ from unclog.findings.base import Finding
 from unclog.ui.chrome import rounded_panel, status_glyph
 from unclog.ui.picker import Section, run_rich_multiselect
 from unclog.ui.theme import ACCENT, DIM, SEVERITY_BAD, SEVERITY_OK
+from unclog.util.paths import claude_paths
 
 # Connector glyph anchoring nested result rows under the summary headline.
 _CONNECTOR = "⎿"
@@ -110,6 +111,7 @@ def _build_picker_sections(curate_findings: list[Finding]) -> list[Section]:
     """
     agents = [f for f in curate_findings if f.type == "agent_inventory"]
     skills = [f for f in curate_findings if f.type == "skill_inventory"]
+    commands = [f for f in curate_findings if f.type == "command_inventory"]
     mcps = [f for f in curate_findings if f.type == "mcp_inventory"]
 
     groups: list[tuple[str, list[Finding]]] = []
@@ -117,6 +119,8 @@ def _build_picker_sections(curate_findings: list[Finding]) -> list[Section]:
         groups.append(("Curate agents", agents))
     if skills:
         groups.append(("Curate skills", skills))
+    if commands:
+        groups.append(("Curate commands", commands))
     if mcps:
         groups.append(("Curate MCPs", mcps))
 
@@ -200,6 +204,42 @@ def _render_result(
         line.append(f"{after:,}", style=f"bold {ACCENT}")
         console.print("")
         console.print(line)
+
+    _maybe_show_star_line(result, console)
+
+
+_STAR_SENTINEL_NAME = "star_shown"
+_STAR_REPO_URL = "github.com/thomaschill/unclog"
+
+
+def _maybe_show_star_line(result: ApplyResult, console: Console) -> None:
+    """Show a one-time 'star the repo' line after the first successful apply.
+
+    Rendered at most once ever — a sentinel file under ``~/.claude/.unclog/``
+    records that we've shown it. Any OS error reading or writing the
+    sentinel fails open (no line shown) so a cosmetic nag never breaks
+    the apply path.
+    """
+    if not result.succeeded:
+        return
+    try:
+        sentinel = claude_paths().unclog_dir / _STAR_SENTINEL_NAME
+        if sentinel.exists():
+            return
+    except OSError:
+        return
+
+    star_line = Text()
+    star_line.append("★ Enjoying unclog? Star it on GitHub: ", style=DIM)
+    star_line.append(_STAR_REPO_URL, style=f"dim {ACCENT}")
+    console.print("")
+    console.print(star_line)
+
+    try:
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+    except OSError:
+        pass
 
 
 def _stdin_is_tty() -> bool:

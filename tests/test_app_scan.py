@@ -55,6 +55,13 @@ def _build_minimal_home(tmp_path: Path) -> Path:
         "---\nname: planner\ndescription: plans work\n---\n", encoding="utf-8"
     )
 
+    commands = home / "commands"
+    commands.mkdir()
+    (commands / "ship.md").write_text(
+        "---\nname: ship\ndescription: Ship the current branch\n---\nbody\n",
+        encoding="utf-8",
+    )
+
     plugins_dir = home / "plugins"
     plugins_dir.mkdir()
     (plugins_dir / "installed_plugins.json").write_text(
@@ -85,6 +92,9 @@ def test_run_scan_builds_state_from_fixture(
     assert state.claude_home == home.resolve()
     assert len(state.skills) == 1
     assert len(state.agents) == 1
+    assert len(state.commands) == 1
+    assert state.commands[0].slug == "ship"
+    assert state.commands[0].description == "Ship the current branch"
     assert len(state.installed_plugins) == 1
     assert state.config is not None
     assert set(state.config.mcp_servers) == {"github", "notion"}

@@ -63,6 +63,7 @@ from unclog.ui.theme import ACCENT, DIM
 _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
     "agent_inventory": ("agent", "#60a5fa"),
     "skill_inventory": ("skill", "#2dd4bf"),
+    "command_inventory": ("command", "#a78bfa"),
     "mcp_inventory": ("mcp", "#fb923c"),
 }
 

@@ -25,10 +25,10 @@ def build_composition(state: InstallationState) -> list[dict[str, Any]]:
     """Return the top-contributors list for the baseline panel.
 
     One row per measurable bucket: agents-descriptions, skills-descriptions,
-    and every MCP server with a known session-tokens value. MCPs with no
-    session attribution are dropped from this list (they'd render as
-    ``— tok`` and crowd out the real contributors); the picker still
-    lists them so users can curate them.
+    commands-descriptions, and every MCP server with a known
+    session-tokens value. MCPs with no session attribution are dropped
+    from this list (they'd render as ``— tok`` and crowd out the real
+    contributors); the picker still lists them so users can curate them.
     """
     counter = TiktokenCounter()
     entries: list[dict[str, Any]] = []
@@ -54,6 +54,19 @@ def build_composition(state: InstallationState) -> list[dict[str, Any]]:
             entries.append(
                 {
                     "source": f"skills:descriptions (n={len(state.skills)})",
+                    "tokens": tokens,
+                    "scope": "global",
+                }
+            )
+
+    if state.commands:
+        tokens = sum(
+            counter.count(f"{c.name}: {c.description or ''}") for c in state.commands
+        )
+        if tokens:
+            entries.append(
+                {
+                    "source": f"commands:descriptions (n={len(state.commands)})",
                     "tokens": tokens,
                     "scope": "global",
                 }

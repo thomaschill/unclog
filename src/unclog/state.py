@@ -9,16 +9,16 @@ from pathlib import Path
 from types import MappingProxyType
 
 from unclog.scan.config import ClaudeConfig, Settings
-from unclog.scan.filesystem import Agent, InstalledPlugin, PluginContent, Skill
+from unclog.scan.filesystem import Agent, Command, InstalledPlugin, PluginContent, Skill
 
 
 @dataclass(frozen=True)
 class InstallationState:
     """Everything unclog sees about one Claude Code installation.
 
-    Only holds what the picker needs: agents, skills, MCP servers, and
-    the plugin content we read for totals. CLAUDE.md, hooks, memory,
-    stats, and session system blocks were removed in 0.2.
+    Holds what the picker needs: agents, skills, slash commands, MCP
+    servers, and the plugin content we read for totals. CLAUDE.md,
+    hooks, memory, stats, and session system blocks were removed in 0.2.
     """
 
     generated_at: datetime
@@ -27,6 +27,7 @@ class InstallationState:
     settings: Settings | None
     skills: tuple[Skill, ...] = ()
     agents: tuple[Agent, ...] = ()
+    commands: tuple[Command, ...] = ()
     installed_plugins: tuple[InstalledPlugin, ...] = ()
     plugin_content: tuple[PluginContent, ...] = ()
     # Per-MCP tokens derived from the latest session's tools array, when

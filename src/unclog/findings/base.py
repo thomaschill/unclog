@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-FindingType = Literal["agent_inventory", "skill_inventory", "mcp_inventory"]
+FindingType = Literal[
+    "agent_inventory", "skill_inventory", "command_inventory", "mcp_inventory"
+]
 ScopeKind = Literal["global", "project"]
 ActionPrimitive = Literal["delete_file", "comment_out_mcp"]
 

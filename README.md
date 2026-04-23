@@ -1,6 +1,7 @@
 # unclog
 
 [![PyPI](https://img.shields.io/pypi/v/unclog.svg)](https://pypi.org/project/unclog/)
+[![GitHub stars](https://img.shields.io/github/stars/thomaschill/unclog?style=flat&logo=github)](https://github.com/thomaschill/unclog)
 
 **Every agent, skill, and MCP server you've installed occupies your Claude Code context window on every turn.** `unclog` scans your install, shows you what's costing tokens, and lets you handpick what to delete — locally, with no telemetry, no accounts, and no network calls.
 
@@ -18,6 +19,7 @@ unclog
 
 - Every **agent** in `~/.claude/agents/`, with its token cost.
 - Every **skill** in `~/.claude/skills/`, with its token cost.
+- Every **slash command** in `~/.claude/commands/`, with its token cost.
 - Every **MCP server** declared in `~/.claude.json` (global and per-project), with its measured session-token cost when available.
 - A **baseline** — the total tokens loaded before you type a single message.
 
@@ -25,7 +27,7 @@ unclog
 
 ![unclog interactive curate flow](https://raw.githubusercontent.com/thomaschill/unclog/main/demo.gif)
 
-After the scan, one sectioned picker opens. Tick the agents / skills / MCPs you want to remove, hit `enter`, confirm once, done. A post-apply line shows how many tokens you saved and the new baseline.
+After the scan, one sectioned picker opens. Tick the agents / skills / commands / MCPs you want to remove, hit `enter`, confirm once, done. A post-apply line shows how many tokens you saved and the new baseline.
 
 Picker keys: `↑↓` move · `space` toggle · `a` / `A` check section / all · `n` / `N` clear section / all · `enter` apply · `q` quit.
 

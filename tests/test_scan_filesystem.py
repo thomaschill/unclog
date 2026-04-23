@@ -169,9 +169,40 @@ def test_enumerate_commands_lists_markdown_files(tmp_path: Path) -> None:
     (commands_dir / "skip.txt").write_text("ignored", encoding="utf-8")
     commands = enumerate_commands(commands_dir)
     assert sorted(c.slug for c in commands) == ["bar", "foo"]
-    total = {c.slug: c.total_bytes for c in commands}
-    assert total["foo"] == 5
-    assert total["bar"] == 8
+    by_slug = {c.slug: c for c in commands}
+    # No frontmatter → whole file is body, description is None.
+    assert by_slug["foo"].description is None
+    assert by_slug["foo"].frontmatter_bytes == 0
+    assert by_slug["foo"].body_bytes == 5
+    assert by_slug["bar"].body_bytes == 8
+
+
+def test_enumerate_commands_parses_frontmatter(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    commands_dir.mkdir()
+    (commands_dir / "review.md").write_text(
+        "---\nname: review\ndescription: Review a pull request\n---\nbody\n",
+        encoding="utf-8",
+    )
+    commands = enumerate_commands(commands_dir)
+    assert len(commands) == 1
+    assert commands[0].slug == "review"
+    assert commands[0].name == "review"
+    assert commands[0].description == "Review a pull request"
+    assert commands[0].frontmatter_bytes > 0
+
+
+def test_enumerate_commands_recurses_into_subdirs(tmp_path: Path) -> None:
+    commands_dir = tmp_path / "commands"
+    (commands_dir / "git").mkdir(parents=True)
+    (commands_dir / "git" / "commit.md").write_text("c", encoding="utf-8")
+    (commands_dir / "top.md").write_text("t", encoding="utf-8")
+    commands = enumerate_commands(commands_dir)
+    assert {c.slug for c in commands} == {"commit", "top"}
+
+
+def test_enumerate_commands_empty_for_missing_dir(tmp_path: Path) -> None:
+    assert enumerate_commands(tmp_path / "nope") == ()
 
 
 def test_load_installed_plugins_parses_plugins_array(tmp_path: Path) -> None:

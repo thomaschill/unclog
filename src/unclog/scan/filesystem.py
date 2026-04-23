@@ -47,12 +47,19 @@ class Agent:
 
 @dataclass(frozen=True)
 class Command:
-    """A slash command discovered at ``<scope>/commands/<slug>.md``."""
+    """A slash command discovered at ``<scope>/commands/<slug>.md``.
+
+    Unlike agents, commands don't require frontmatter — the filename stem
+    is the invocation name. A description, if present, comes from optional
+    frontmatter and is used for the picker's token estimate.
+    """
 
     name: str
     slug: str
     path: Path
-    total_bytes: int
+    description: str | None
+    frontmatter_bytes: int
+    body_bytes: int
 
 
 @dataclass(frozen=True)
@@ -241,19 +248,46 @@ def enumerate_agents(agents_dir: Path) -> tuple[Agent, ...]:
 
 
 def enumerate_commands(commands_dir: Path) -> tuple[Command, ...]:
-    """Return every slash command found under ``commands_dir``."""
+    """Return every slash command found under ``commands_dir`` (recursive).
+
+    Claude Code loads slash commands from nested category dirs the same
+    way it does agents (``commands/git/commit.md`` becomes ``/git:commit``
+    in some layouts), so we ``rglob``. Any ``.md`` file is treated as a
+    command — the filename stem is the invocation name. Frontmatter is
+    parsed when present so we can surface the description in the picker,
+    but commands without frontmatter are still enumerated.
+    """
     if not commands_dir.is_dir():
         return ()
     commands: list[Command] = []
-    for entry in sorted(commands_dir.iterdir()):
-        if not entry.is_file() or entry.suffix != ".md":
+    seen_slugs: set[str] = set()
+    md_files: list[Path] = []
+    for root, _dirs, files in os.walk(commands_dir, followlinks=False):
+        for name in files:
+            if name.endswith(".md"):
+                md_files.append(Path(root) / name)
+    for entry in sorted(md_files):
+        if not entry.is_file():
             continue
         try:
-            size = entry.stat().st_size
+            text = entry.read_text(encoding="utf-8")
         except OSError:
             continue
+        frontmatter, fm_bytes, body_bytes = _split_frontmatter(text)
         slug = entry.stem
-        commands.append(Command(name=slug, slug=slug, path=entry, total_bytes=size))
+        if slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        commands.append(
+            Command(
+                name=frontmatter.get("name") or slug,
+                slug=slug,
+                path=entry,
+                description=frontmatter.get("description"),
+                frontmatter_bytes=fm_bytes,
+                body_bytes=body_bytes,
+            )
+        )
     return tuple(commands)
 
 

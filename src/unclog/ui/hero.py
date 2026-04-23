@@ -30,6 +30,7 @@ DEFAULT_TREEMAP_WIDTH = 76
 # parts we need for a human-friendly row label.
 _SKILL_SOURCE_RE = re.compile(r"^skills:descriptions \(n=(?P<n>\d+)\)$")
 _AGENT_SOURCE_RE = re.compile(r"^agents:descriptions \(n=(?P<n>\d+)\)$")
+_COMMAND_SOURCE_RE = re.compile(r"^commands:descriptions \(n=(?P<n>\d+)\)$")
 _MCP_SOURCE_RE = re.compile(r"^mcp:(?P<name>.+)$")
 
 
@@ -116,6 +117,10 @@ def _append_composition_label(text: Text, entry: dict[str, Any]) -> None:
     if m := _AGENT_SOURCE_RE.match(source):
         text.append(m["n"], style="bold default")
         text.append(" agents", style=DIM)
+        return
+    if m := _COMMAND_SOURCE_RE.match(source):
+        text.append(m["n"], style="bold default")
+        text.append(" commands", style=DIM)
         return
     if m := _MCP_SOURCE_RE.match(source):
         text.append("mcp ", style=DIM)
