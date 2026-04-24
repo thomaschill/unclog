@@ -1,11 +1,13 @@
 """Apply primitives — one function per :class:`~unclog.findings.base.ActionPrimitive`.
 
-Two primitives in 0.2:
+Two primitives:
 
 - ``delete_file`` removes an agent file or skill directory.
-- ``comment_out_mcp`` renames an MCP server key in ``~/.claude.json``
-  so Claude Code stops loading it. Reversible by editing the JSON back;
-  unclog no longer snapshots.
+- ``remove_mcp`` deletes an MCP server entry from ``~/.claude.json``
+  (global or project scope). Destructive and irreversible — unclog
+  keeps no snapshot. Earlier versions renamed the key to
+  ``__unclog_disabled__<name>`` for a soft-disable, but that left the
+  entry inside ``mcpServers`` where Claude Code may still load it.
 """
 
 from __future__ import annotations
@@ -28,8 +30,8 @@ def apply_action(finding: Finding, *, claude_home: Path) -> None:
     primitive = finding.action.primitive
     if primitive == "delete_file":
         _delete_file(finding)
-    elif primitive == "comment_out_mcp":
-        _comment_out_mcp(finding, claude_home=claude_home)
+    elif primitive == "remove_mcp":
+        _remove_mcp(finding, claude_home=claude_home)
     else:  # pragma: no cover - Literal exhaustion
         raise ApplyError(f"Unsupported primitive: {primitive}")
 
@@ -50,14 +52,11 @@ def _delete_file(finding: Finding) -> None:
         raise ApplyError(f"could not delete {target}: {exc}") from exc
 
 
-_MCP_DISABLED_PREFIX = "__unclog_disabled__"
-
-
-def _comment_out_mcp(finding: Finding, *, claude_home: Path) -> None:
-    """Rename ``mcpServers[name]`` to ``__unclog_disabled__<name>``."""
+def _remove_mcp(finding: Finding, *, claude_home: Path) -> None:
+    """Delete ``mcpServers[name]`` (global or project) from ``.claude.json``."""
     name = finding.action.server_name
     if not name:
-        raise ApplyError("comment_out_mcp action is missing the server name")
+        raise ApplyError("remove_mcp action is missing the server name")
     config_path = ClaudePaths(home=claude_home).config_json
     if not config_path.is_file():
         raise ApplyError(f".claude.json not found at {config_path}")
@@ -71,11 +70,7 @@ def _comment_out_mcp(finding: Finding, *, claude_home: Path) -> None:
             f"MCP server {name!r} is no longer listed under {label} — "
             f"it may have been removed since the scan. Re-run unclog and try again."
         )
-    disabled_key = f"{_MCP_DISABLED_PREFIX}{name}"
-    rebuilt: dict[str, Any] = {}
-    for key, value in container.items():
-        rebuilt[disabled_key if key == name else key] = value
-    _write_mcp_servers(data, finding, rebuilt)
+    del container[name]
     _write_json(config_path, data)
 
 
@@ -111,19 +106,6 @@ def _locate_mcp_servers(
             f"{config_path} has no MCP servers section — re-run unclog and try again."
         )
     return servers, str(config_path)
-
-
-def _write_mcp_servers(
-    data: dict[str, Any], finding: Finding, new_servers: dict[str, Any]
-) -> None:
-    scope = finding.scope
-    if scope.kind == "project" and scope.project_path is not None:
-        projects = data["projects"]
-        key = _match_project_key(projects, scope.project_path)
-        assert key is not None
-        projects[key]["mcpServers"] = new_servers
-        return
-    data["mcpServers"] = new_servers
 
 
 def _match_project_key(projects: dict[str, Any], target: Path) -> str | None:

@@ -41,7 +41,7 @@ def _mcp(name: str, tokens: int | None, *, scope: Scope | None = None) -> Findin
         type="mcp_inventory",
         title=name,
         scope=scope or Scope(kind="global"),
-        action=Action(primitive="comment_out_mcp", server_name=name),
+        action=Action(primitive="remove_mcp", server_name=name),
         token_savings=tokens,
     )
 

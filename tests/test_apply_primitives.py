@@ -94,10 +94,10 @@ def test_delete_file_unlinks_symlinked_skill_dir(tmp_path: Path) -> None:
     assert (backing / "SKILL.md").read_text(encoding="utf-8") == "shared body\n"
 
 
-# -- comment_out_mcp --------------------------------------------------------
+# -- remove_mcp -------------------------------------------------------------
 
 
-def test_comment_out_mcp_renames_global_server_key(tmp_path: Path) -> None:
+def test_remove_mcp_deletes_global_server_key(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
     config_path = claude_home / ".claude.json"
@@ -108,30 +108,56 @@ def test_comment_out_mcp_renames_global_server_key(tmp_path: Path) -> None:
     finding = _finding(
         fid="mcp:notion",
         type_="mcp_inventory",
-        primitive="comment_out_mcp",
+        primitive="remove_mcp",
         server_name="notion",
     )
     apply_action(finding, claude_home=claude_home)
     data = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "notion" not in data["mcpServers"]
-    assert data["mcpServers"]["__unclog_disabled__notion"]["command"] == "nt"
+    assert data["mcpServers"] == {"github": {"command": "gh"}}
 
 
-def test_comment_out_mcp_raises_apply_error_on_malformed_json(tmp_path: Path) -> None:
+def test_remove_mcp_deletes_stale_disabled_prefix_entries(tmp_path: Path) -> None:
+    """Leftovers from the old soft-disable scheme remove by their literal key."""
+    claude_home = tmp_path / ".claude"
+    claude_home.mkdir()
+    config_path = claude_home / ".claude.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "github": {"command": "gh"},
+                    "__unclog_disabled__notion": {"command": "nt"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    finding = _finding(
+        fid="mcp:__unclog_disabled__notion",
+        type_="mcp_inventory",
+        primitive="remove_mcp",
+        server_name="__unclog_disabled__notion",
+    )
+    apply_action(finding, claude_home=claude_home)
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["mcpServers"] == {"github": {"command": "gh"}}
+
+
+def test_remove_mcp_raises_apply_error_on_malformed_json(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
     (claude_home / ".claude.json").write_text("{not valid json,,}", encoding="utf-8")
     finding = _finding(
         fid="mcp:x",
         type_="mcp_inventory",
-        primitive="comment_out_mcp",
+        primitive="remove_mcp",
         server_name="x",
     )
     with pytest.raises(ApplyError, match="not valid JSON"):
         apply_action(finding, claude_home=claude_home)
 
 
-def test_comment_out_mcp_errors_when_server_missing(tmp_path: Path) -> None:
+def test_remove_mcp_errors_when_server_missing(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
     (claude_home / ".claude.json").write_text(
@@ -140,14 +166,14 @@ def test_comment_out_mcp_errors_when_server_missing(tmp_path: Path) -> None:
     finding = _finding(
         fid="mcp:ghost",
         type_="mcp_inventory",
-        primitive="comment_out_mcp",
+        primitive="remove_mcp",
         server_name="ghost",
     )
     with pytest.raises(ApplyError, match="no longer listed"):
         apply_action(finding, claude_home=claude_home)
 
 
-def test_comment_out_mcp_renames_project_scoped_server(tmp_path: Path) -> None:
+def test_remove_mcp_deletes_project_scoped_server(tmp_path: Path) -> None:
     """Project-scoped MCP finding edits projects.<abs>.mcpServers, not root."""
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
@@ -173,19 +199,17 @@ def test_comment_out_mcp_renames_project_scoped_server(tmp_path: Path) -> None:
     finding = _finding(
         fid="mcp:proj_mcp",
         type_="mcp_inventory",
-        primitive="comment_out_mcp",
+        primitive="remove_mcp",
         server_name="proj_mcp",
         scope=Scope(kind="project", project_path=project),
     )
     apply_action(finding, claude_home=claude_home)
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["mcpServers"] == {"global_only": {"command": "g"}}
-    proj_servers = data["projects"][str(project)]["mcpServers"]
-    assert "proj_mcp" not in proj_servers
-    assert "__unclog_disabled__proj_mcp" in proj_servers
+    assert data["projects"][str(project)]["mcpServers"] == {"other": {"command": "o"}}
 
 
-def test_comment_out_mcp_errors_when_project_missing_from_config(tmp_path: Path) -> None:
+def test_remove_mcp_errors_when_project_missing_from_config(tmp_path: Path) -> None:
     claude_home = tmp_path / ".claude"
     claude_home.mkdir()
     project = tmp_path / "gone"
@@ -196,7 +220,7 @@ def test_comment_out_mcp_errors_when_project_missing_from_config(tmp_path: Path)
     finding = _finding(
         fid="mcp:ghost",
         type_="mcp_inventory",
-        primitive="comment_out_mcp",
+        primitive="remove_mcp",
         server_name="ghost",
         scope=Scope(kind="project", project_path=project),
     )

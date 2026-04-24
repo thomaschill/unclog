@@ -131,7 +131,7 @@ def test_build_curate_findings_includes_every_mcp_as_comment_out() -> None:
     findings = build_curate_findings(_state_with(config=config))
     mcps = [f for f in findings if f.type == "mcp_inventory"]
     assert sorted(f.action.server_name for f in mcps) == ["Roblox_Studio", "polymarket-docs"]
-    assert all(f.action.primitive == "comment_out_mcp" for f in mcps)
+    assert all(f.action.primitive == "remove_mcp" for f in mcps)
 
 
 def test_build_curate_findings_attaches_session_tokens_to_mcp() -> None:

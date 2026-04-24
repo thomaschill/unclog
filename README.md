@@ -31,7 +31,7 @@ After the scan, one sectioned picker opens. Tick the agents / skills / commands 
 
 Picker keys: `↑↓` move · `space` toggle · `a` / `A` check section / all · `n` / `N` clear section / all · `enter` apply · `q` quit.
 
-**Actions are destructive.** Deleted files are removed from disk — there is no undo command. MCP servers are a softer case: they're renamed to `__unclog_disabled__<name>` in your config, so you can revive one by hand-editing `~/.claude.json` and removing the prefix.
+**Actions are destructive.** Deleted files are removed from disk. MCP servers are deleted from `~/.claude.json`. There is no undo and unclog keeps no snapshot — if you want to revive something, restore it from your own backup or reinstall.
 
 ## Requirements
 

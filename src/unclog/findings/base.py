@@ -10,7 +10,7 @@ FindingType = Literal[
     "agent_inventory", "skill_inventory", "command_inventory", "mcp_inventory"
 ]
 ScopeKind = Literal["global", "project"]
-ActionPrimitive = Literal["delete_file", "comment_out_mcp"]
+ActionPrimitive = Literal["delete_file", "remove_mcp"]
 
 
 @dataclass(frozen=True)

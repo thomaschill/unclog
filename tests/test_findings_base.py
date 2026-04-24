@@ -25,7 +25,7 @@ def test_action_defaults_allow_primitive_only() -> None:
 
 def test_action_carries_path_and_server_name() -> None:
     action = Action(
-        primitive="comment_out_mcp",
+        primitive="remove_mcp",
         path=Path("/x.md"),
         server_name="github",
     )
@@ -47,7 +47,7 @@ def test_finding_token_savings_optional() -> None:
         type="mcp_inventory",
         title="curate ship",
         scope=Scope(kind="global"),
-        action=Action(primitive="comment_out_mcp", server_name="ship"),
+        action=Action(primitive="remove_mcp", server_name="ship"),
         token_savings=4200,
     )
     assert measured.token_savings == 4200

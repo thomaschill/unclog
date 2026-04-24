@@ -82,7 +82,7 @@ def _mcp_findings(state: InstallationState) -> list[Finding]:
                 type="mcp_inventory",
                 title=name,
                 scope=seen[name],
-                action=Action(primitive="comment_out_mcp", server_name=name),
+                action=Action(primitive="remove_mcp", server_name=name),
                 token_savings=tokens if tokens else None,
             )
         )
