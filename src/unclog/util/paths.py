@@ -1,8 +1,8 @@
 """Path resolution for the Claude Code installation.
 
 All path construction in unclog routes through this module so the
-`CLAUDE_CONFIG_DIR` environment variable is always honoured and we never
-hardcode `~/.claude/` deeper than here.
+``CLAUDE_CONFIG_DIR`` environment variable is always honoured and we
+never hardcode ``~/.claude/`` deeper than here.
 """
 
 from __future__ import annotations
@@ -39,18 +39,6 @@ class ClaudePaths:
         return inside
 
     @property
-    def settings_json(self) -> Path:
-        return self.home / "settings.json"
-
-    @property
-    def claude_md(self) -> Path:
-        return self.home / "CLAUDE.md"
-
-    @property
-    def claude_local_md(self) -> Path:
-        return self.home / "CLAUDE.local.md"
-
-    @property
     def skills_dir(self) -> Path:
         return self.home / "skills"
 
@@ -63,53 +51,13 @@ class ClaudePaths:
         return self.home / "commands"
 
     @property
-    def plugins_dir(self) -> Path:
-        return self.home / "plugins"
-
-    @property
-    def installed_plugins_json(self) -> Path:
-        return self.plugins_dir / "installed_plugins.json"
-
-    @property
     def projects_dir(self) -> Path:
         return self.home / "projects"
 
     @property
-    def stats_cache_json(self) -> Path:
-        return self.home / "stats-cache.json"
-
-    @property
-    def history_jsonl(self) -> Path:
-        return self.home / "history.jsonl"
-
-    @property
     def unclog_dir(self) -> Path:
+        """Where unclog stores its own sidecar state (error logs, sentinels)."""
         return self.home / ".unclog"
-
-    @property
-    def snapshots_dir(self) -> Path:
-        return self.unclog_dir / "snapshots"
-
-    @property
-    def cache_dir(self) -> Path:
-        return self.unclog_dir / "cache"
-
-    @property
-    def config_toml(self) -> Path:
-        return self.unclog_dir / "config.toml"
-
-    def project_session_dir(self, project_path: Path) -> Path:
-        """Return the session-history directory Claude Code keeps for a project."""
-        return self.projects_dir / encode_project_path(project_path)
-
-    def project_memory_file(self, project_path: Path) -> Path:
-        """Return the auto-memory index file Claude Code persists per project.
-
-        This file is auto-injected into the system prompt of every session
-        (truncated past ~200 lines), so its size feeds the baseline cost
-        just like CLAUDE.md does.
-        """
-        return self.projects_dir / encode_project_path(project_path) / "memory" / "MEMORY.md"
 
 
 @cache
@@ -129,15 +77,3 @@ def claude_home() -> Path:
 def claude_paths() -> ClaudePaths:
     """Return a ``ClaudePaths`` rooted at the resolved Claude home."""
     return ClaudePaths(home=claude_home())
-
-
-def encode_project_path(project_path: Path) -> str:
-    """Encode an absolute project path the way Claude Code does for session storage.
-
-    Claude Code stores per-project session JSONL under
-    ``~/.claude/projects/<encoded>/`` where ``<encoded>`` is the absolute
-    path with every ``/`` replaced by ``-``. A leading slash therefore
-    becomes a leading ``-``.
-    """
-    absolute = project_path.expanduser().resolve()
-    return str(absolute).replace("/", "-")

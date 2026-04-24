@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from unclog.util.paths import ClaudePaths, claude_home, claude_paths, encode_project_path
+from unclog.util.paths import ClaudePaths, claude_home, claude_paths
 
 
 @pytest.fixture(autouse=True)
@@ -34,34 +34,11 @@ def test_claude_paths_derives_all_entries(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert isinstance(p, ClaudePaths)
     assert p.home == tmp_path.resolve()
     assert p.config_json == tmp_path.resolve() / ".claude.json"
-    assert p.settings_json == tmp_path.resolve() / "settings.json"
     assert p.skills_dir == tmp_path.resolve() / "skills"
+    assert p.agents_dir == tmp_path.resolve() / "agents"
+    assert p.commands_dir == tmp_path.resolve() / "commands"
     assert p.projects_dir == tmp_path.resolve() / "projects"
     assert p.unclog_dir == tmp_path.resolve() / ".unclog"
-    assert p.snapshots_dir == tmp_path.resolve() / ".unclog" / "snapshots"
-    assert p.installed_plugins_json == tmp_path.resolve() / "plugins" / "installed_plugins.json"
-
-
-def test_encode_project_path_replaces_slashes_with_dashes() -> None:
-    # Absolute path: each "/" becomes "-", leading "/" becomes leading "-".
-    encoded = encode_project_path(Path("/Users/tom/Desktop/unclog/unclog"))
-    assert encoded == "-Users-tom-Desktop-unclog-unclog"
-
-
-def test_encode_project_path_resolves_relative() -> None:
-    # Relative paths get resolved against cwd before encoding.
-    encoded = encode_project_path(Path("."))
-    assert encoded.startswith("-")
-    assert encoded == str(Path.cwd()).replace("/", "-")
-
-
-def test_project_session_dir_uses_encoded_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
-    p = claude_paths()
-    session = p.project_session_dir(Path("/Users/tom/proj"))
-    assert session == tmp_path.resolve() / "projects" / "-Users-tom-proj"
 
 
 def test_claude_home_ignores_empty_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -103,7 +80,6 @@ def test_config_json_defaults_to_inside_when_neither_exists(
 def test_claude_home_is_cached(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
     first = claude_home()
-    # Changing the env after first resolution must not affect subsequent calls
-    # (resolve once at startup, per spec §12.2).
+    # Changing the env after first resolution must not affect subsequent calls.
     os.environ["CLAUDE_CONFIG_DIR"] = str(tmp_path / "other")
     assert claude_home() == first
