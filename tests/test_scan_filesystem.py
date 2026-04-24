@@ -2,16 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from unclog.scan.filesystem import (
-    enumerate_agents,
-    enumerate_commands,
-    enumerate_skills,
-)
-
-SKILL_BODY = "This is the body.\nWith two lines.\n"
+from unclog.scan.filesystem import enumerate_agents, enumerate_commands, enumerate_skills
 
 
-def _write_skill(skills_dir: Path, slug: str, frontmatter: str, body: str = SKILL_BODY) -> Path:
+def _write_skill(skills_dir: Path, slug: str, frontmatter: str, body: str = "body\n") -> Path:
     d = skills_dir / slug
     d.mkdir(parents=True)
     skill_md = d / "SKILL.md"
@@ -29,7 +23,7 @@ def test_enumerate_skills_parses_frontmatter(tmp_path: Path) -> None:
     _write_skill(
         skills_dir,
         "code-reviewer",
-        frontmatter='name: code-reviewer\ndescription: "Reviews code thoroughly."\nmodel: sonnet\n',
+        frontmatter='name: code-reviewer\ndescription: "Reviews code thoroughly."\n',
     )
     skills = enumerate_skills(skills_dir)
     assert len(skills) == 1
@@ -37,10 +31,6 @@ def test_enumerate_skills_parses_frontmatter(tmp_path: Path) -> None:
     assert s.name == "code-reviewer"
     assert s.slug == "code-reviewer"
     assert s.description == "Reviews code thoroughly."
-    assert s.model == "sonnet"
-    assert s.frontmatter_bytes > 0
-    assert s.body_bytes == len(SKILL_BODY.encode("utf-8"))
-    assert s.total_dir_bytes >= s.frontmatter_bytes + s.body_bytes
 
 
 def test_enumerate_skills_falls_back_to_dir_name_without_frontmatter(tmp_path: Path) -> None:
@@ -53,8 +43,6 @@ def test_enumerate_skills_falls_back_to_dir_name_without_frontmatter(tmp_path: P
     assert len(skills) == 1
     assert skills[0].name == "plain-skill"
     assert skills[0].description is None
-    assert skills[0].frontmatter_bytes == 0
-    assert skills[0].body_bytes == len(b"No frontmatter here\n")
 
 
 def test_enumerate_skills_skips_dirs_without_skill_md(tmp_path: Path) -> None:
@@ -67,16 +55,6 @@ def test_enumerate_skills_skips_dirs_without_skill_md(tmp_path: Path) -> None:
     assert [s.slug for s in skills] == ["has-it"]
 
 
-def test_enumerate_skills_sums_total_dir_bytes(tmp_path: Path) -> None:
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    _write_skill(skills_dir, "heavy", frontmatter="name: heavy\n", body="body")
-    (skills_dir / "heavy" / "reference.md").write_text("x" * 500, encoding="utf-8")
-    skills = enumerate_skills(skills_dir)
-    assert len(skills) == 1
-    assert skills[0].total_dir_bytes >= 500 + skills[0].frontmatter_bytes + skills[0].body_bytes
-
-
 def test_enumerate_skills_handles_unterminated_frontmatter(tmp_path: Path) -> None:
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
@@ -85,9 +63,9 @@ def test_enumerate_skills_handles_unterminated_frontmatter(tmp_path: Path) -> No
     (d / "SKILL.md").write_text("---\nname: borked\nno closing fence\n", encoding="utf-8")
     skills = enumerate_skills(skills_dir)
     assert len(skills) == 1
-    # Unterminated frontmatter → whole file is body, name falls back to dir.
+    # Unterminated frontmatter → empty mapping, name falls back to dir.
     assert skills[0].name == "borked"
-    assert skills[0].frontmatter_bytes == 0
+    assert skills[0].description is None
 
 
 def test_enumerate_agents_reads_frontmatter(tmp_path: Path) -> None:
@@ -130,9 +108,7 @@ def test_enumerate_agents_skips_files_without_agent_frontmatter(tmp_path: Path) 
     # README-style file: no agent frontmatter.
     (agents_dir / "README.md").write_text("# Agents\n\nhow-to guide\n", encoding="utf-8")
     # LICENSE-ish file: frontmatter but missing `description`.
-    (agents_dir / "LICENSE.md").write_text(
-        "---\nname: license\n---\nMIT\n", encoding="utf-8"
-    )
+    (agents_dir / "LICENSE.md").write_text("---\nname: license\n---\nMIT\n", encoding="utf-8")
     # Real agent.
     (agents_dir / "real.md").write_text(
         "---\nname: real\ndescription: does work\n---\nbody\n",
@@ -167,11 +143,7 @@ def test_enumerate_commands_lists_markdown_files(tmp_path: Path) -> None:
     commands = enumerate_commands(commands_dir)
     assert sorted(c.slug for c in commands) == ["bar", "foo"]
     by_slug = {c.slug: c for c in commands}
-    # No frontmatter → whole file is body, description is None.
     assert by_slug["foo"].description is None
-    assert by_slug["foo"].frontmatter_bytes == 0
-    assert by_slug["foo"].body_bytes == 5
-    assert by_slug["bar"].body_bytes == 8
 
 
 def test_enumerate_commands_parses_frontmatter(tmp_path: Path) -> None:
@@ -186,7 +158,6 @@ def test_enumerate_commands_parses_frontmatter(tmp_path: Path) -> None:
     assert commands[0].slug == "review"
     assert commands[0].name == "review"
     assert commands[0].description == "Review a pull request"
-    assert commands[0].frontmatter_bytes > 0
 
 
 def test_enumerate_commands_recurses_into_subdirs(tmp_path: Path) -> None:
@@ -200,5 +171,3 @@ def test_enumerate_commands_recurses_into_subdirs(tmp_path: Path) -> None:
 
 def test_enumerate_commands_empty_for_missing_dir(tmp_path: Path) -> None:
     assert enumerate_commands(tmp_path / "nope") == ()
-
-

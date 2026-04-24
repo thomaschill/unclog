@@ -1,16 +1,14 @@
-"""Enumerate skills, agents, commands, and installed plugins.
+"""Enumerate skills, agents, and slash commands from a Claude Code install.
 
-Walks the conventional directory layouts Claude Code writes and returns
-immutable records with size + basic metadata. Intentionally minimal for
-M1: frontmatter parsing is line-oriented and recognises string-scalar
-keys (``name``, ``description``, ``model``) only. Richer YAML support
-lands when we actually need it.
+Frontmatter parsing is intentionally line-oriented: recognises string-scalar
+keys only (``name``, ``description``). Good enough for the picker's token
+estimate; richer YAML lands when we actually need it.
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,12 +22,7 @@ class Skill:
     name: str
     slug: str
     directory: Path
-    skill_md_path: Path
     description: str | None
-    model: str | None
-    frontmatter_bytes: int
-    body_bytes: int
-    total_dir_bytes: int
 
 
 @dataclass(frozen=True)
@@ -40,8 +33,6 @@ class Agent:
     slug: str
     path: Path
     description: str | None
-    frontmatter_bytes: int
-    body_bytes: int
 
 
 @dataclass(frozen=True)
@@ -57,19 +48,18 @@ class Command:
     slug: str
     path: Path
     description: str | None
-    frontmatter_bytes: int
-    body_bytes: int
 
 
-def _split_frontmatter(text: str) -> tuple[Mapping[str, str], int, int]:
-    """Return (parsed, frontmatter_byte_length, body_byte_length).
+def _parse_frontmatter(text: str) -> Mapping[str, str]:
+    """Return the key/value pairs from a ``---``-fenced YAML header.
 
-    If the text does not open with a ``---`` fence line the entire text
-    is treated as body with an empty frontmatter mapping.
+    Empty mapping if the text doesn't open with a fence or the fence is
+    unterminated. Unknown shapes are skipped silently — the picker just
+    falls back to the filename stem when ``name`` is missing.
     """
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].rstrip("\r\n") != _FRONTMATTER_DELIM:
-        return {}, 0, len(text.encode("utf-8"))
+        return {}
 
     end_index: int | None = None
     for i, line in enumerate(lines[1:], start=1):
@@ -77,18 +67,12 @@ def _split_frontmatter(text: str) -> tuple[Mapping[str, str], int, int]:
             end_index = i
             break
     if end_index is None:
-        # Unterminated frontmatter — treat the whole file as body.
-        return {}, 0, len(text.encode("utf-8"))
-
-    frontmatter_src = "".join(lines[: end_index + 1])
-    body_src = "".join(lines[end_index + 1 :])
+        return {}
 
     parsed: dict[str, str] = {}
     for line in lines[1:end_index]:
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if ":" not in stripped:
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
             continue
         key, _, value = stripped.partition(":")
         key = key.strip()
@@ -97,37 +81,31 @@ def _split_frontmatter(text: str) -> tuple[Mapping[str, str], int, int]:
             value = value[1:-1]
         if key:
             parsed[key] = value
+    return parsed
 
-    return parsed, len(frontmatter_src.encode("utf-8")), len(body_src.encode("utf-8"))
 
+def _iter_md_files(root: Path) -> Iterator[Path]:
+    """Yield every ``*.md`` under ``root`` in lexical order.
 
-def _dir_total_bytes(path: Path) -> int:
-    """Sum the size of every file under ``path`` without following symlinks.
-
-    ``rglob`` follows directory symlinks by default on Python < 3.13,
-    so a skill with a circular symlink (``skills/foo/loop -> ../..``)
-    would walk the tree forever. We walk by hand with
-    :func:`os.walk` and ``followlinks=False`` to stay safe across
-    Python versions.
+    ``os.walk`` with ``followlinks=False`` prevents a circular directory
+    symlink from spinning forever; ``Path.rglob`` follows dir symlinks
+    on Python < 3.13, so we don't rely on it.
     """
-    total = 0
+    md_files: list[Path] = []
+    for dirpath, _dirs, files in os.walk(root, followlinks=False):
+        for name in files:
+            if name.endswith(".md"):
+                md_files.append(Path(dirpath) / name)
+    return iter(sorted(md_files))
+
+
+def _read_md_frontmatter(path: Path) -> Mapping[str, str] | None:
+    """Read ``path`` and return its frontmatter, or ``None`` on OS error."""
     try:
-        for root, _dirs, files in os.walk(path, followlinks=False):
-            for name in files:
-                entry = Path(root) / name
-                try:
-                    if entry.is_symlink():
-                        # Don't stat across symlinks — the target might
-                        # be huge, shared, or missing; reporting the
-                        # link's own size is the honest thing to do.
-                        total += entry.lstat().st_size
-                    elif entry.is_file():
-                        total += entry.stat().st_size
-                except OSError:
-                    continue
+        text = path.read_text(encoding="utf-8")
     except OSError:
-        return total
-    return total
+        return None
+    return _parse_frontmatter(text)
 
 
 def enumerate_skills(skills_dir: Path) -> tuple[Skill, ...]:
@@ -145,23 +123,15 @@ def enumerate_skills(skills_dir: Path) -> tuple[Skill, ...]:
         skill_md = entry / "SKILL.md"
         if not skill_md.is_file():
             continue
-        try:
-            text = skill_md.read_text(encoding="utf-8")
-        except OSError:
+        frontmatter = _read_md_frontmatter(skill_md)
+        if frontmatter is None:
             continue
-        frontmatter, fm_bytes, body_bytes = _split_frontmatter(text)
-        name = frontmatter.get("name") or entry.name
         skills.append(
             Skill(
-                name=name,
+                name=frontmatter.get("name") or entry.name,
                 slug=entry.name,
                 directory=entry,
-                skill_md_path=skill_md,
                 description=frontmatter.get("description"),
-                model=frontmatter.get("model"),
-                frontmatter_bytes=fm_bytes,
-                body_bytes=body_bytes,
-                total_dir_bytes=_dir_total_bytes(entry),
             )
         )
     return tuple(skills)
@@ -170,34 +140,21 @@ def enumerate_skills(skills_dir: Path) -> tuple[Skill, ...]:
 def enumerate_agents(agents_dir: Path) -> tuple[Agent, ...]:
     """Return every agent found under ``agents_dir`` (recursive).
 
-    Claude Code loads agents from nested category dirs (``agents/design/*.md``,
-    ``agents/engineering/*.md``, ...), so we ``rglob``. Non-agent files like
-    ``README.md`` or ``LICENSE.md`` share the same extension but lack agent
-    frontmatter — we filter to files whose YAML front-matter declares both
-    ``name`` and ``description``, which is the shape Claude's agent loader
-    requires. Entries with duplicate slugs are deduped (first wins,
-    lexical-path order) to match the loader's last-registration-loses behavior.
+    Non-agent files like ``README.md`` or ``LICENSE.md`` share the same
+    extension but lack agent frontmatter — we filter to files whose YAML
+    front-matter declares both ``name`` and ``description``, which is the
+    shape Claude's agent loader requires. Duplicate slugs are deduped
+    (first wins, lexical-path order) to match the loader's
+    last-registration-loses behavior.
     """
     if not agents_dir.is_dir():
         return ()
     agents: list[Agent] = []
     seen_slugs: set[str] = set()
-    md_files: list[Path] = []
-    # ``os.walk`` with ``followlinks=False`` prevents a circular
-    # directory symlink from spinning forever; ``Path.rglob`` follows
-    # dir symlinks on Python < 3.13, so we don't rely on it.
-    for root, _dirs, files in os.walk(agents_dir, followlinks=False):
-        for name in files:
-            if name.endswith(".md"):
-                md_files.append(Path(root) / name)
-    for entry in sorted(md_files):
-        if not entry.is_file():
+    for entry in _iter_md_files(agents_dir):
+        frontmatter = _read_md_frontmatter(entry)
+        if frontmatter is None:
             continue
-        try:
-            text = entry.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        frontmatter, fm_bytes, body_bytes = _split_frontmatter(text)
         if "name" not in frontmatter or "description" not in frontmatter:
             continue
         slug = entry.stem
@@ -210,8 +167,6 @@ def enumerate_agents(agents_dir: Path) -> tuple[Agent, ...]:
                 slug=slug,
                 path=entry,
                 description=frontmatter.get("description"),
-                frontmatter_bytes=fm_bytes,
-                body_bytes=body_bytes,
             )
         )
     return tuple(agents)
@@ -220,30 +175,18 @@ def enumerate_agents(agents_dir: Path) -> tuple[Agent, ...]:
 def enumerate_commands(commands_dir: Path) -> tuple[Command, ...]:
     """Return every slash command found under ``commands_dir`` (recursive).
 
-    Claude Code loads slash commands from nested category dirs the same
-    way it does agents (``commands/git/commit.md`` becomes ``/git:commit``
-    in some layouts), so we ``rglob``. Any ``.md`` file is treated as a
-    command — the filename stem is the invocation name. Frontmatter is
-    parsed when present so we can surface the description in the picker,
-    but commands without frontmatter are still enumerated.
+    Any ``.md`` file is a command — the filename stem is the invocation
+    name. Frontmatter is optional; when present we surface the
+    description for the picker's token estimate.
     """
     if not commands_dir.is_dir():
         return ()
     commands: list[Command] = []
     seen_slugs: set[str] = set()
-    md_files: list[Path] = []
-    for root, _dirs, files in os.walk(commands_dir, followlinks=False):
-        for name in files:
-            if name.endswith(".md"):
-                md_files.append(Path(root) / name)
-    for entry in sorted(md_files):
-        if not entry.is_file():
+    for entry in _iter_md_files(commands_dir):
+        frontmatter = _read_md_frontmatter(entry)
+        if frontmatter is None:
             continue
-        try:
-            text = entry.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        frontmatter, fm_bytes, body_bytes = _split_frontmatter(text)
         slug = entry.stem
         if slug in seen_slugs:
             continue
@@ -254,10 +197,6 @@ def enumerate_commands(commands_dir: Path) -> tuple[Command, ...]:
                 slug=slug,
                 path=entry,
                 description=frontmatter.get("description"),
-                frontmatter_bytes=fm_bytes,
-                body_bytes=body_bytes,
             )
         )
     return tuple(commands)
-
-

@@ -36,23 +36,15 @@ def _agent(slug: str, description: str, path: Path | None = None) -> Agent:
         slug=slug,
         path=path or Path(f"/tmp/claude/agents/{slug}.md"),
         description=description,
-        frontmatter_bytes=len(description),
-        body_bytes=100,
     )
 
 
 def _skill(slug: str, description: str, directory: Path | None = None) -> Skill:
-    d = directory or Path(f"/tmp/claude/skills/{slug}")
     return Skill(
         name=slug,
         slug=slug,
-        directory=d,
-        skill_md_path=d / "SKILL.md",
+        directory=directory or Path(f"/tmp/claude/skills/{slug}"),
         description=description,
-        model=None,
-        frontmatter_bytes=len(description),
-        body_bytes=100,
-        total_dir_bytes=500,
     )
 
 
@@ -62,8 +54,6 @@ def _command(slug: str, description: str | None, path: Path | None = None) -> Co
         slug=slug,
         path=path or Path(f"/tmp/claude/commands/{slug}.md"),
         description=description,
-        frontmatter_bytes=len(description) if description else 0,
-        body_bytes=50,
     )
 
 
