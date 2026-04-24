@@ -1,8 +1,8 @@
 """Parse ``~/.claude.json`` into typed, immutable records.
 
-Defensive by design — unknown fields are preserved on ``raw`` and never
-cause errors. A missing file returns ``None`` so callers can distinguish
-"not configured" from "configured but empty."
+Defensive by design — unknown fields are ignored and never cause errors.
+A missing file returns ``None`` so callers can distinguish "not
+configured" from "configured but empty."
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from types import MappingProxyType
 
 
 class ConfigParseError(RuntimeError):
-    """Raised when a config file exists but cannot be read or parsed.
+    """Raised when ``.claude.json`` exists but cannot be read or parsed.
 
     Covers both content problems (invalid JSON) and access problems
     (permission denied, transient I/O error). The CLI catches this
@@ -30,35 +30,26 @@ class ConfigParseError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class McpServer:
-    """A single MCP server definition."""
-
-    name: str
-    command: str | None = None
-    args: tuple[str, ...] = ()
-    env: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
-    raw: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
-
-
-@dataclass(frozen=True)
 class ProjectRecord:
     """A project entry from ``~/.claude.json``'s ``projects`` map."""
 
     path: Path
-    mcp_servers: Mapping[str, McpServer] = field(default_factory=lambda: MappingProxyType({}))
-    last_session_id: str | None = None
-    last_cost: float | None = None
-    last_api_duration_ms: int | None = None
-    raw: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
+    mcp_servers: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
 class ClaudeConfig:
-    """Parsed ``~/.claude.json``."""
+    """Parsed ``~/.claude.json``.
 
-    mcp_servers: Mapping[str, McpServer] = field(default_factory=lambda: MappingProxyType({}))
-    projects: Mapping[Path, ProjectRecord] = field(default_factory=lambda: MappingProxyType({}))
-    num_startups: int | None = None
+    Only the MCP server names are retained — every other field unclog
+    reads (command/args/env, per-project session metadata, startup
+    counts) was used by pre-0.2 detectors that have since been removed.
+    """
+
+    mcp_servers: frozenset[str] = frozenset()
+    projects: Mapping[Path, ProjectRecord] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 def _read_json(path: Path) -> object | None:
@@ -77,60 +68,10 @@ def _read_json(path: Path) -> object | None:
     return data
 
 
-def _coerce_str_tuple(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(item for item in value if isinstance(item, str))
-
-
-def _coerce_str_mapping(value: object) -> Mapping[str, str]:
+def _mcp_server_names(value: object) -> frozenset[str]:
     if not isinstance(value, dict):
-        return MappingProxyType({})
-    return MappingProxyType(
-        {str(k): str(v) for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
-    )
-
-
-def _parse_mcp_server(name: str, data: object) -> McpServer | None:
-    if not isinstance(data, dict):
-        return None
-    return McpServer(
-        name=name,
-        command=data.get("command") if isinstance(data.get("command"), str) else None,
-        args=_coerce_str_tuple(data.get("args")),
-        env=_coerce_str_mapping(data.get("env")),
-        raw=MappingProxyType(dict(data)),
-    )
-
-
-def _parse_mcp_server_map(value: object) -> Mapping[str, McpServer]:
-    if not isinstance(value, dict):
-        return MappingProxyType({})
-    servers: dict[str, McpServer] = {}
-    for name, data in value.items():
-        if not isinstance(name, str):
-            continue
-        server = _parse_mcp_server(name, data)
-        if server is not None:
-            servers[name] = server
-    return MappingProxyType(servers)
-
-
-def _parse_project_record(abs_path: str, data: object) -> ProjectRecord | None:
-    if not isinstance(data, dict):
-        return None
-    return ProjectRecord(
-        path=Path(abs_path),
-        mcp_servers=_parse_mcp_server_map(data.get("mcpServers")),
-        last_session_id=data.get("lastSessionId")
-        if isinstance(data.get("lastSessionId"), str)
-        else None,
-        last_cost=data.get("lastCost") if isinstance(data.get("lastCost"), (int, float)) else None,
-        last_api_duration_ms=data.get("lastAPIDuration")
-        if isinstance(data.get("lastAPIDuration"), int)
-        else None,
-        raw=MappingProxyType(dict(data)),
-    )
+        return frozenset()
+    return frozenset(name for name in value if isinstance(name, str))
 
 
 def load_claude_config(path: Path) -> ClaudeConfig | None:
@@ -149,16 +90,14 @@ def load_claude_config(path: Path) -> ClaudeConfig | None:
     projects_raw = raw.get("projects")
     if isinstance(projects_raw, dict):
         for abs_path, project_data in projects_raw.items():
-            if not isinstance(abs_path, str):
+            if not isinstance(abs_path, str) or not isinstance(project_data, dict):
                 continue
-            record = _parse_project_record(abs_path, project_data)
-            if record is not None:
-                projects[record.path] = record
+            projects[Path(abs_path)] = ProjectRecord(
+                path=Path(abs_path),
+                mcp_servers=_mcp_server_names(project_data.get("mcpServers")),
+            )
 
     return ClaudeConfig(
-        mcp_servers=_parse_mcp_server_map(raw.get("mcpServers")),
+        mcp_servers=_mcp_server_names(raw.get("mcpServers")),
         projects=MappingProxyType(projects),
-        num_startups=raw.get("numStartups") if isinstance(raw.get("numStartups"), int) else None,
     )
-
-

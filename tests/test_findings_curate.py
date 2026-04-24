@@ -5,7 +5,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from unclog.findings.curate import build_curate_findings
-from unclog.scan.config import ClaudeConfig, McpServer, ProjectRecord
+from unclog.scan.config import ClaudeConfig, ProjectRecord
 from unclog.scan.filesystem import Agent, Command, Skill
 from unclog.state import InstallationState
 
@@ -135,17 +135,8 @@ def test_build_curate_findings_handles_command_without_description() -> None:
 
 def test_build_curate_findings_includes_every_mcp_as_comment_out() -> None:
     """Every declared MCP (local + remote) surfaces as a curate row."""
-    http = McpServer(
-        name="polymarket-docs",
-        raw=MappingProxyType({"type": "http", "url": "https://docs.polymarket.com/mcp"}),
-    )
-    stdio = McpServer(
-        name="Roblox_Studio",
-        command="/path/cmd",
-        raw=MappingProxyType({"type": "stdio", "command": "/path/cmd"}),
-    )
     config = ClaudeConfig(
-        mcp_servers=MappingProxyType({"polymarket-docs": http, "Roblox_Studio": stdio}),
+        mcp_servers=frozenset({"polymarket-docs", "Roblox_Studio"}),
     )
     findings = build_curate_findings(_state_with(config=config))
     mcps = [f for f in findings if f.type == "mcp_inventory"]
@@ -155,8 +146,7 @@ def test_build_curate_findings_includes_every_mcp_as_comment_out() -> None:
 
 def test_build_curate_findings_attaches_session_tokens_to_mcp() -> None:
     """When session attribution is present, the finding carries token_savings."""
-    stdio = McpServer(name="Roblox_Studio", command="x")
-    config = ClaudeConfig(mcp_servers=MappingProxyType({"Roblox_Studio": stdio}))
+    config = ClaudeConfig(mcp_servers=frozenset({"Roblox_Studio"}))
     findings = build_curate_findings(
         _state_with(config=config, mcp_session_tokens={"Roblox_Studio": 4500}),
     )
@@ -166,15 +156,10 @@ def test_build_curate_findings_attaches_session_tokens_to_mcp() -> None:
 
 def test_build_curate_findings_dedupes_mcp_across_projects_preferring_global() -> None:
     """Same MCP in multiple projects collapses to one row; global scope wins."""
-    stdio = McpServer(name="shared", command="x")
-    p1 = ProjectRecord(
-        path=Path("/a"), mcp_servers=MappingProxyType({"shared": stdio})
-    )
-    p2 = ProjectRecord(
-        path=Path("/b"), mcp_servers=MappingProxyType({"shared": stdio})
-    )
+    p1 = ProjectRecord(path=Path("/a"), mcp_servers=frozenset({"shared"}))
+    p2 = ProjectRecord(path=Path("/b"), mcp_servers=frozenset({"shared"}))
     config = ClaudeConfig(
-        mcp_servers=MappingProxyType({"shared": stdio}),
+        mcp_servers=frozenset({"shared"}),
         projects=MappingProxyType({Path("/a"): p1, Path("/b"): p2}),
     )
     findings = build_curate_findings(_state_with(config=config))

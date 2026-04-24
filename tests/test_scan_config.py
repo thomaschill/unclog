@@ -21,21 +21,12 @@ def test_load_claude_config_parses_mcp_servers_and_projects(tmp_path: Path) -> N
     _write_json(
         cfg_path,
         {
-            "numStartups": 42,
             "mcpServers": {
-                "github": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-github"],
-                    "env": {"GITHUB_TOKEN": "redacted"},
-                },
-                "broken": 123,  # malformed entry — should be skipped, not crash
+                "github": {"command": "npx"},
+                "notion": {"command": "notion-mcp"},
             },
             "projects": {
-                "/Users/tom/proj-a": {
-                    "mcpServers": {
-                        "notion": {"command": "notion-mcp"},
-                    },
-                },
+                "/Users/tom/proj-a": {"mcpServers": {"project-only": {"command": "x"}}},
                 "/Users/tom/proj-b": "not-an-object",  # malformed — skipped
             },
             "oauthAccount": {"email": "ignored"},
@@ -44,18 +35,10 @@ def test_load_claude_config_parses_mcp_servers_and_projects(tmp_path: Path) -> N
 
     cfg = load_claude_config(cfg_path)
     assert isinstance(cfg, ClaudeConfig)
-    assert cfg.num_startups == 42
-    assert "github" in cfg.mcp_servers
-    assert "broken" not in cfg.mcp_servers
-
-    github = cfg.mcp_servers["github"]
-    assert github.command == "npx"
-    assert github.args == ("-y", "@modelcontextprotocol/server-github")
-    assert github.env == {"GITHUB_TOKEN": "redacted"}
+    assert cfg.mcp_servers == frozenset({"github", "notion"})
 
     proj_a = cfg.projects[Path("/Users/tom/proj-a")]
-    assert "notion" in proj_a.mcp_servers
-
+    assert proj_a.mcp_servers == frozenset({"project-only"})
     assert Path("/Users/tom/proj-b") not in cfg.projects
 
 
@@ -72,7 +55,7 @@ def test_load_claude_config_handles_non_dict_root(tmp_path: Path) -> None:
     _write_json(cfg_path, ["unexpected", "array"])
     cfg = load_claude_config(cfg_path)
     assert isinstance(cfg, ClaudeConfig)
-    assert cfg.mcp_servers == {}
+    assert cfg.mcp_servers == frozenset()
     assert cfg.projects == {}
 
 

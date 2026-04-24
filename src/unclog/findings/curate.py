@@ -7,7 +7,6 @@ plugin update, so deleting individual files is the wrong action.
 from __future__ import annotations
 
 from unclog.findings.base import Action, Finding, Scope
-from unclog.scan.config import McpServer
 from unclog.scan.tokens import TiktokenCounter
 from unclog.state import InstallationState
 
@@ -71,25 +70,22 @@ def _mcp_findings(state: InstallationState) -> list[Finding]:
     if config is None:
         return []
 
-    seen: dict[str, tuple[McpServer, Scope]] = {}
-    for name, server in config.mcp_servers.items():
-        seen[name] = (server, Scope(kind="global"))
+    seen: dict[str, Scope] = {name: Scope(kind="global") for name in config.mcp_servers}
     for project in config.projects.values():
-        for name, server in project.mcp_servers.items():
+        for name in project.mcp_servers:
             if name in seen:
                 continue
-            seen[name] = (server, Scope(kind="project", project_path=project.path))
+            seen[name] = Scope(kind="project", project_path=project.path)
 
     findings: list[Finding] = []
     for name in sorted(seen):
-        _server, scope = seen[name]
         tokens = state.mcp_session_tokens.get(name)
         findings.append(
             Finding(
                 id=f"mcp:{name}",
                 type="mcp_inventory",
                 title=name,
-                scope=scope,
+                scope=seen[name],
                 action=Action(primitive="comment_out_mcp", server_name=name),
                 token_savings=tokens if tokens else None,
             )
