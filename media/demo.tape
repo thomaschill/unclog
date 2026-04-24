@@ -1,7 +1,7 @@
 # unclog demo — interactive curate flow
 #
-# Run with: vhs demo.tape
-# Output:   demo.gif
+# Run with: cd media && vhs demo.tape
+# Output:   media/demo.gif (relative to repo root)
 #
 # Drives the single sectioned picker: scrolls a few rows, toggles a
 # few items, submits, and declines the "Delete N item(s)?" confirm.

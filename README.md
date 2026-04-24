@@ -13,7 +13,7 @@ uv tool install unclog
 unclog
 ```
 
-![unclog scan output](https://raw.githubusercontent.com/thomaschill/unclog/main/screenshot.png)
+![unclog scan output](https://raw.githubusercontent.com/thomaschill/unclog/main/media/screenshot.png)
 
 ## What it shows
 
@@ -25,7 +25,7 @@ unclog
 
 ## Remove what's costing you
 
-![unclog interactive curate flow](https://raw.githubusercontent.com/thomaschill/unclog/main/demo.gif)
+![unclog interactive curate flow](https://raw.githubusercontent.com/thomaschill/unclog/main/media/demo.gif)
 
 After the scan, one sectioned picker opens. Tick the agents / skills / commands / MCPs you want to remove, hit `enter`, confirm once, done. A post-apply line shows how many tokens you saved and the new baseline.
 

@@ -1,8 +1,8 @@
 # README hero screenshot — captures the slim default view with the
 # sectioned picker mounted.
 #
-# Run with: vhs screenshot.tape
-# Output:   screenshot.png
+# Run with: cd media && vhs screenshot.tape
+# Output:   media/screenshot.png (relative to repo root)
 
 # vhs requires an Output directive; route the throwaway GIF to /tmp
 # since we only want the PNG for the README hero.
