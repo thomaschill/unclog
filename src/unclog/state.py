@@ -8,28 +8,24 @@ from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 
-from unclog.scan.config import ClaudeConfig, Settings
-from unclog.scan.filesystem import Agent, Command, InstalledPlugin, PluginContent, Skill
+from unclog.scan.config import ClaudeConfig
+from unclog.scan.filesystem import Agent, Command, Skill
 
 
 @dataclass(frozen=True)
 class InstallationState:
     """Everything unclog sees about one Claude Code installation.
 
-    Holds what the picker needs: agents, skills, slash commands, MCP
-    servers, and the plugin content we read for totals. CLAUDE.md,
-    hooks, memory, stats, and session system blocks were removed in 0.2.
+    Holds what the picker needs: agents, skills, slash commands, and the
+    MCP servers declared in ``~/.claude.json``.
     """
 
     generated_at: datetime
     claude_home: Path
     config: ClaudeConfig | None
-    settings: Settings | None
     skills: tuple[Skill, ...] = ()
     agents: tuple[Agent, ...] = ()
     commands: tuple[Command, ...] = ()
-    installed_plugins: tuple[InstalledPlugin, ...] = ()
-    plugin_content: tuple[PluginContent, ...] = ()
     # Per-MCP tokens derived from the latest session's tools array, when
     # present. Modern session JSONLs usually omit schemas, so this is
     # often empty; the picker then renders ``— tok`` for that server.

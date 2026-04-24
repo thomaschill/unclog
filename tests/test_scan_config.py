@@ -5,13 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from unclog.scan.config import (
-    ClaudeConfig,
-    ConfigParseError,
-    Settings,
-    load_claude_config,
-    load_settings,
-)
+from unclog.scan.config import ClaudeConfig, ConfigParseError, load_claude_config
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -38,9 +32,6 @@ def test_load_claude_config_parses_mcp_servers_and_projects(tmp_path: Path) -> N
             },
             "projects": {
                 "/Users/tom/proj-a": {
-                    "lastSessionId": "abc-123",
-                    "lastCost": 0.42,
-                    "lastAPIDuration": 1800,
                     "mcpServers": {
                         "notion": {"command": "notion-mcp"},
                     },
@@ -63,9 +54,6 @@ def test_load_claude_config_parses_mcp_servers_and_projects(tmp_path: Path) -> N
     assert github.env == {"GITHUB_TOKEN": "redacted"}
 
     proj_a = cfg.projects[Path("/Users/tom/proj-a")]
-    assert proj_a.last_session_id == "abc-123"
-    assert proj_a.last_cost == pytest.approx(0.42)
-    assert proj_a.last_api_duration_ms == 1800
     assert "notion" in proj_a.mcp_servers
 
     assert Path("/Users/tom/proj-b") not in cfg.projects
@@ -86,64 +74,6 @@ def test_load_claude_config_handles_non_dict_root(tmp_path: Path) -> None:
     assert isinstance(cfg, ClaudeConfig)
     assert cfg.mcp_servers == {}
     assert cfg.projects == {}
-
-
-def test_load_settings_parses_plugins_and_permissions(tmp_path: Path) -> None:
-    settings_path = tmp_path / "settings.json"
-    _write_json(
-        settings_path,
-        {
-            "model": "claude-opus-4-7",
-            "enabledPlugins": {
-                "superpower@antonin": True,
-                "broken@x": "not-a-bool",
-                "disabled@y": False,
-            },
-            "permissions": {
-                "allow": ["Bash(git status)", "Read(*)"],
-                "deny": ["Bash(rm *)"],
-            },
-            "unknownField": "ignored",
-        },
-    )
-
-    s = load_settings(settings_path)
-    assert isinstance(s, Settings)
-    assert s.model == "claude-opus-4-7"
-    assert s.enabled_plugins == {"superpower@antonin": True, "disabled@y": False}
-    assert s.permissions_allow == ("Bash(git status)", "Read(*)")
-    assert s.permissions_deny == ("Bash(rm *)",)
-    assert s.raw["unknownField"] == "ignored"
-
-
-def test_load_settings_returns_none_when_missing(tmp_path: Path) -> None:
-    assert load_settings(tmp_path / "nope.json") is None
-
-
-def test_load_settings_handles_empty_file(tmp_path: Path) -> None:
-    settings_path = tmp_path / "settings.json"
-    _write_json(settings_path, {})
-    s = load_settings(settings_path)
-    assert isinstance(s, Settings)
-    assert s.enabled_plugins == {}
-    assert s.permissions_allow == ()
-    assert s.permissions_deny == ()
-    assert s.model is None
-
-
-def test_load_settings_tolerates_missing_permissions_key(tmp_path: Path) -> None:
-    settings_path = tmp_path / "settings.json"
-    _write_json(settings_path, {"enabledPlugins": {"p@m": True}})
-    s = load_settings(settings_path)
-    assert s is not None
-    assert s.permissions_allow == ()
-
-
-def test_load_settings_raises_on_malformed_json(tmp_path: Path) -> None:
-    settings_path = tmp_path / "settings.json"
-    settings_path.write_text("}}garbage", encoding="utf-8")
-    with pytest.raises(ConfigParseError):
-        load_settings(settings_path)
 
 
 def test_load_claude_config_raises_config_parse_error_on_permission_denied(
@@ -173,72 +103,3 @@ def test_load_claude_config_raises_config_parse_error_on_permission_denied(
     finally:
         # Restore so the tmp_path can be cleaned up.
         cfg_path.chmod(0o600)
-
-
-def test_load_settings_parses_nested_hooks(tmp_path: Path) -> None:
-    settings_path = tmp_path / "settings.json"
-    _write_json(
-        settings_path,
-        {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "matcher": "*",
-                        "hooks": [
-                            {"type": "command", "command": "echo hi"},
-                            {"type": "command", "command": "date"},
-                        ],
-                    }
-                ],
-                "PreToolUse": [
-                    {
-                        "hooks": [{"type": "command", "command": "audit-tool"}],
-                    }
-                ],
-                "UnknownEvent": "not-a-list",
-            }
-        },
-    )
-    s = load_settings(settings_path, source_scope="global")
-    assert s is not None
-    events = [h.event for h in s.hooks]
-    commands = [h.command for h in s.hooks]
-    assert sorted(events) == ["PreToolUse", "SessionStart", "SessionStart"]
-    assert "echo hi" in commands
-    assert "date" in commands
-    assert "audit-tool" in commands
-    for hook in s.hooks:
-        assert hook.source_scope == "global"
-        assert hook.source_path == settings_path
-
-
-def test_load_settings_hooks_skip_empty_commands(tmp_path: Path) -> None:
-    settings_path = tmp_path / "settings.json"
-    _write_json(
-        settings_path,
-        {
-            "hooks": {
-                "UserPromptSubmit": [
-                    {
-                        "hooks": [
-                            {"type": "command", "command": ""},
-                            {"type": "command", "command": "   "},
-                            {"type": "command"},  # no command key
-                            {"type": "command", "command": "real"},
-                        ]
-                    }
-                ]
-            }
-        },
-    )
-    s = load_settings(settings_path)
-    assert s is not None
-    assert [h.command for h in s.hooks] == ["real"]
-
-
-def test_load_settings_hooks_absent_means_empty_tuple(tmp_path: Path) -> None:
-    settings_path = tmp_path / "settings.json"
-    _write_json(settings_path, {"model": "claude-opus-4-7"})
-    s = load_settings(settings_path)
-    assert s is not None
-    assert s.hooks == ()

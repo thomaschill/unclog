@@ -7,20 +7,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 
-from unclog.scan.config import (
-    ConfigParseError,
-    Settings,
-    load_claude_config,
-    load_settings,
-)
+from unclog.scan.config import ConfigParseError, load_claude_config
 from unclog.scan.filesystem import (
-    InstalledPlugin,
-    PluginContent,
     enumerate_agents,
     enumerate_commands,
-    enumerate_plugin_content,
     enumerate_skills,
-    load_installed_plugins,
 )
 from unclog.scan.session import latest_session_path
 from unclog.scan.tokens import TiktokenCounter
@@ -29,28 +20,6 @@ from unclog.util.paths import ClaudePaths, claude_paths
 
 _MCP_TOOL_PREFIX = "mcp__"
 _MAX_SESSION_RECORDS = 25
-
-
-def _plugin_key(plugin_name: str, marketplace: str | None) -> str:
-    return f"{plugin_name}@{marketplace}" if marketplace else plugin_name
-
-
-def _enabled_plugin_content(
-    plugins: tuple[InstalledPlugin, ...],
-    settings: Settings | None,
-) -> tuple[PluginContent, ...]:
-    enabled = settings.enabled_plugins if settings is not None else {}
-    out: list[PluginContent] = []
-    for plugin in plugins:
-        key = _plugin_key(plugin.name, plugin.marketplace)
-        if not enabled.get(key, False):
-            continue
-        if plugin.install_path is None:
-            continue
-        content = enumerate_plugin_content(key, plugin.install_path)
-        if content is not None:
-            out.append(content)
-    return tuple(out)
 
 
 def _latest_session(projects_dir: Path) -> Path | None:
@@ -144,26 +113,15 @@ def _scan(paths: ClaudePaths, warnings: list[str]) -> InstallationState:
         warnings.append(str(exc))
         config = None
 
-    try:
-        settings = load_settings(paths.settings_json)
-    except ConfigParseError as exc:
-        warnings.append(str(exc))
-        settings = None
-
-    plugins = load_installed_plugins(paths.installed_plugins_json)
-
     session_path = _latest_session(paths.projects_dir)
 
     return InstallationState(
         generated_at=datetime.now(tz=UTC),
         claude_home=paths.home,
         config=config,
-        settings=settings,
         skills=enumerate_skills(paths.skills_dir),
         agents=enumerate_agents(paths.agents_dir),
         commands=enumerate_commands(paths.commands_dir),
-        installed_plugins=plugins,
-        plugin_content=_enabled_plugin_content(plugins, settings),
         mcp_session_tokens=MappingProxyType(_mcp_session_tokens(session_path)),
         warnings=tuple(warnings),
     )

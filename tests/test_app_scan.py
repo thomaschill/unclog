@@ -32,16 +32,6 @@ def _build_minimal_home(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
-    (home / "settings.json").write_text(
-        json.dumps(
-            {
-                "enabledPlugins": {"superpower@antonin": True},
-                "permissions": {"allow": ["Bash(git status)"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-
     skills = home / "skills" / "code-reviewer"
     skills.mkdir(parents=True)
     (skills / "SKILL.md").write_text(
@@ -62,23 +52,6 @@ def _build_minimal_home(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
 
-    plugins_dir = home / "plugins"
-    plugins_dir.mkdir()
-    (plugins_dir / "installed_plugins.json").write_text(
-        json.dumps(
-            {
-                "plugins": [
-                    {
-                        "name": "superpower",
-                        "marketplace": "antonin",
-                        "version": "1.2.3",
-                        "installedAt": "2026-01-15T10:00:00Z",
-                    }
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
     return home
 
 
@@ -95,11 +68,8 @@ def test_run_scan_builds_state_from_fixture(
     assert len(state.commands) == 1
     assert state.commands[0].slug == "ship"
     assert state.commands[0].description == "Ship the current branch"
-    assert len(state.installed_plugins) == 1
     assert state.config is not None
     assert set(state.config.mcp_servers) == {"github", "notion"}
-    assert state.settings is not None
-    assert state.settings.enabled_plugins == {"superpower@antonin": True}
 
 
 def test_run_scan_warns_when_home_missing(

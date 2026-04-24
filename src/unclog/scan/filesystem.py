@@ -9,7 +9,6 @@ lands when we actually need it.
 
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -60,35 +59,6 @@ class Command:
     description: str | None
     frontmatter_bytes: int
     body_bytes: int
-
-
-@dataclass(frozen=True)
-class InstalledPlugin:
-    """A record from ``~/.claude/plugins/installed_plugins.json``."""
-
-    name: str
-    marketplace: str | None
-    version: str | None
-    install_path: Path | None
-    installed_at: str | None
-    git_commit_sha: str | None
-
-
-@dataclass(frozen=True)
-class PluginContent:
-    """Bundled skills and agents discovered under an enabled plugin.
-
-    Claude Code loads plugin content from ``<install_path>/.claude/skills/``
-    and ``<install_path>/.claude/agents/``. Other client subdirectories
-    (``.cursor/``, ``.gemini/``, ``.trae/`` …) are sibling copies for
-    different AI clients — we intentionally ignore them to avoid double
-    counting.
-    """
-
-    plugin_key: str
-    install_path: Path
-    skills: tuple[Skill, ...]
-    agents: tuple[Agent, ...]
 
 
 def _split_frontmatter(text: str) -> tuple[Mapping[str, str], int, int]:
@@ -291,98 +261,3 @@ def enumerate_commands(commands_dir: Path) -> tuple[Command, ...]:
     return tuple(commands)
 
 
-def enumerate_plugin_content(
-    plugin_key: str, install_path: Path
-) -> PluginContent | None:
-    """Scan a plugin's Claude-specific bundled skills + agents.
-
-    Returns ``None`` if the install path is missing. Returns a populated
-    ``PluginContent`` even when both lists are empty — the presence of
-    the directory itself is a useful signal (the plugin is installed but
-    carries no bundled content).
-    """
-    if not install_path.is_dir():
-        return None
-    claude_dir = install_path / ".claude"
-    skills = enumerate_skills(claude_dir / "skills")
-    agents = enumerate_agents(claude_dir / "agents")
-    return PluginContent(
-        plugin_key=plugin_key,
-        install_path=install_path,
-        skills=skills,
-        agents=agents,
-    )
-
-
-def load_installed_plugins(path: Path) -> tuple[InstalledPlugin, ...]:
-    """Read ``installed_plugins.json`` into typed records.
-
-    Returns an empty tuple if the file is missing or malformed. Unknown
-    fields are ignored; missing scalar fields become ``None``.
-    """
-    if not path.is_file():
-        return ()
-    try:
-        raw: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return ()
-
-    entries: list[object] = []
-    if isinstance(raw, dict):
-        plugins_field = raw.get("plugins")
-        if isinstance(plugins_field, list):
-            # Flat list layout: [{"name": "...", "marketplace": "...", ...}, ...]
-            entries = list(plugins_field)
-        elif isinstance(plugins_field, dict):
-            # Claude Code v2 layout: { "<name>@<marketplace>": [ {<install>}, ... ] }.
-            # The dict key encodes name + marketplace; each value is a list
-            # of install records (one per scope: user/project/etc.). We
-            # emit one entry per install so each scope shows up.
-            for key, value in plugins_field.items():
-                if not isinstance(key, str):
-                    continue
-                plugin_name, _, marketplace = key.partition("@")
-                installs = value if isinstance(value, list) else [value]
-                for install in installs:
-                    if not isinstance(install, dict):
-                        continue
-                    entries.append(
-                        {
-                            "name": plugin_name,
-                            "marketplace": marketplace or None,
-                            **install,
-                        }
-                    )
-        else:
-            # Some historical layouts key plugins by name at the top level.
-            for name, value in raw.items():
-                if isinstance(name, str) and isinstance(value, dict):
-                    entries.append({**value, "name": value.get("name", name)})
-    elif isinstance(raw, list):
-        entries = list(raw)
-
-    parsed: list[InstalledPlugin] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if not isinstance(name, str):
-            continue
-        install_path_raw = entry.get("installPath")
-        parsed.append(
-            InstalledPlugin(
-                name=name,
-                marketplace=entry.get("marketplace")
-                if isinstance(entry.get("marketplace"), str)
-                else None,
-                version=entry.get("version") if isinstance(entry.get("version"), str) else None,
-                install_path=Path(install_path_raw) if isinstance(install_path_raw, str) else None,
-                installed_at=entry.get("installedAt")
-                if isinstance(entry.get("installedAt"), str)
-                else None,
-                git_commit_sha=entry.get("gitCommitSha")
-                if isinstance(entry.get("gitCommitSha"), str)
-                else None,
-            )
-        )
-    return tuple(parsed)

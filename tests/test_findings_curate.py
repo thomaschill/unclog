@@ -23,7 +23,6 @@ def _state_with(
         generated_at=datetime.now(tz=UTC),
         claude_home=claude_home,
         config=config,
-        settings=None,
         agents=agents,
         skills=skills,
         commands=commands,

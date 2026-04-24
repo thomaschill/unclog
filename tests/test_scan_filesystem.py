@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from unclog.scan.filesystem import (
     enumerate_agents,
     enumerate_commands,
-    enumerate_plugin_content,
     enumerate_skills,
-    load_installed_plugins,
 )
 
 SKILL_BODY = "This is the body.\nWith two lines.\n"
@@ -205,93 +202,3 @@ def test_enumerate_commands_empty_for_missing_dir(tmp_path: Path) -> None:
     assert enumerate_commands(tmp_path / "nope") == ()
 
 
-def test_load_installed_plugins_parses_plugins_array(tmp_path: Path) -> None:
-    path = tmp_path / "installed_plugins.json"
-    path.write_text(
-        json.dumps(
-            {
-                "plugins": [
-                    {
-                        "name": "superpower",
-                        "marketplace": "antonin",
-                        "version": "1.2.3",
-                        "installPath": "/tmp/plugins/superpower",
-                        "installedAt": "2026-01-15T10:00:00Z",
-                        "gitCommitSha": "abc123",
-                    },
-                    {"not-a-dict": True},  # skipped
-                    {"missing-name": "skipped"},
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    plugins = load_installed_plugins(path)
-    assert len(plugins) == 1
-    p = plugins[0]
-    assert p.name == "superpower"
-    assert p.version == "1.2.3"
-    assert p.install_path == Path("/tmp/plugins/superpower")
-    assert p.installed_at == "2026-01-15T10:00:00Z"
-
-
-def test_load_installed_plugins_handles_missing_file(tmp_path: Path) -> None:
-    assert load_installed_plugins(tmp_path / "nope.json") == ()
-
-
-def test_load_installed_plugins_handles_malformed_json(tmp_path: Path) -> None:
-    path = tmp_path / "installed_plugins.json"
-    path.write_text("not valid json", encoding="utf-8")
-    assert load_installed_plugins(path) == ()
-
-
-def test_load_installed_plugins_accepts_dict_of_name_to_entry(tmp_path: Path) -> None:
-    path = tmp_path / "installed_plugins.json"
-    path.write_text(
-        json.dumps({"foo": {"version": "0.1"}, "bar": {"version": "2.0"}}),
-        encoding="utf-8",
-    )
-    plugins = load_installed_plugins(path)
-    names = sorted(p.name for p in plugins)
-    assert names == ["bar", "foo"]
-
-
-def test_enumerate_plugin_content_returns_none_for_missing_path(tmp_path: Path) -> None:
-    assert enumerate_plugin_content("missing@mp", tmp_path / "nope") is None
-
-
-def test_enumerate_plugin_content_reads_only_claude_subtree(tmp_path: Path) -> None:
-    # Layout: a realistic plugin cache dir that ships skills for multiple
-    # AI clients. Only the .claude/ subtree should be counted.
-    install = tmp_path / "plugin-install"
-    install.mkdir()
-    # Claude-scoped skill — should be enumerated.
-    (install / ".claude" / "skills" / "focus").mkdir(parents=True)
-    (install / ".claude" / "skills" / "focus" / "SKILL.md").write_text(
-        "---\nname: focus\ndescription: be precise\n---\nbody\n", encoding="utf-8"
-    )
-    # Cursor-scoped duplicate — must be ignored to avoid double counting.
-    (install / ".cursor" / "skills" / "focus").mkdir(parents=True)
-    (install / ".cursor" / "skills" / "focus" / "SKILL.md").write_text(
-        "---\nname: focus\ndescription: be precise\n---\nbody\n", encoding="utf-8"
-    )
-    # Claude-scoped agent.
-    (install / ".claude" / "agents").mkdir(parents=True)
-    (install / ".claude" / "agents" / "reviewer.md").write_text(
-        "---\nname: reviewer\ndescription: reviews code\n---\n", encoding="utf-8"
-    )
-
-    content = enumerate_plugin_content("acme@mp", install)
-    assert content is not None
-    assert content.plugin_key == "acme@mp"
-    assert [s.slug for s in content.skills] == ["focus"]
-    assert [a.slug for a in content.agents] == ["reviewer"]
-
-
-def test_enumerate_plugin_content_handles_plugin_with_no_claude_dir(tmp_path: Path) -> None:
-    install = tmp_path / "empty-plugin"
-    install.mkdir()
-    content = enumerate_plugin_content("empty@mp", install)
-    assert content is not None
-    assert content.skills == ()
-    assert content.agents == ()

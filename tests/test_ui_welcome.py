@@ -17,7 +17,6 @@ def _state(tmp_path: Path) -> InstallationState:
         generated_at=datetime(2026, 4, 19, 12, 0, tzinfo=UTC),
         claude_home=home,
         config=None,
-        settings=None,
     )
 
 
