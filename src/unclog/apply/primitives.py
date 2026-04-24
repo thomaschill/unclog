@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from unclog.findings.base import Finding
+from unclog.util.paths import ClaudePaths
 
 
 class ApplyError(RuntimeError):
@@ -57,7 +58,7 @@ def _comment_out_mcp(finding: Finding, *, claude_home: Path) -> None:
     name = finding.action.server_name
     if not name:
         raise ApplyError("comment_out_mcp action is missing the server name")
-    config_path = _resolve_claude_json(claude_home)
+    config_path = ClaudePaths(home=claude_home).config_json
     if not config_path.is_file():
         raise ApplyError(f".claude.json not found at {config_path}")
     data = _load_json(config_path)
@@ -76,16 +77,6 @@ def _comment_out_mcp(finding: Finding, *, claude_home: Path) -> None:
         rebuilt[disabled_key if key == name else key] = value
     _write_mcp_servers(data, finding, rebuilt)
     _write_json(config_path, data)
-
-
-def _resolve_claude_json(claude_home: Path) -> Path:
-    inside = claude_home / ".claude.json"
-    if inside.exists():
-        return inside
-    outside = claude_home.parent / ".claude.json"
-    if outside.exists():
-        return outside
-    return inside
 
 
 def _locate_mcp_servers(
