@@ -1,8 +1,4 @@
-"""Build the picker's inventory: every agent, skill, command, and MCP server.
-
-Plugin-bundled agents/skills are excluded — they reinstall on the next
-plugin update, so deleting individual files is the wrong action.
-"""
+"""Build the picker's inventory: every agent, skill, command, and MCP server."""
 
 from __future__ import annotations
 

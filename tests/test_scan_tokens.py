@@ -1,42 +1,30 @@
 from __future__ import annotations
 
-import pytest
-
-from unclog.scan.tokens import (
-    DEFAULT_ENCODING,
-    TiktokenCounter,
-    count_tokens,
-    reset_default_counter,
-)
-
-
-@pytest.fixture(autouse=True)
-def _reset_default_counter() -> None:
-    reset_default_counter()
+from unclog.scan.tokens import DEFAULT_ENCODING, TiktokenCounter
 
 
 def test_empty_string_is_zero_tokens() -> None:
-    assert count_tokens("") == 0
+    assert TiktokenCounter().count("") == 0
 
 
 def test_non_empty_string_has_positive_count() -> None:
-    assert count_tokens("hello world") > 0
+    assert TiktokenCounter().count("hello world") > 0
 
 
 def test_longer_text_has_more_tokens() -> None:
-    short = count_tokens("hello")
-    long = count_tokens("hello " * 100)
-    assert long > short
+    counter = TiktokenCounter()
+    assert counter.count("hello " * 100) > counter.count("hello")
 
 
 def test_counter_is_deterministic() -> None:
+    counter = TiktokenCounter()
     text = "The quick brown fox jumps over the lazy dog."
-    assert count_tokens(text) == count_tokens(text)
+    assert counter.count(text) == counter.count(text)
 
 
 def test_counter_tolerates_special_token_literals() -> None:
     # Must not raise on content containing tiktoken special markers.
-    count_tokens("this doc mentions <|endoftext|> literally")
+    TiktokenCounter().count("this doc mentions <|endoftext|> literally")
 
 
 def test_instance_cache_returns_same_count_on_repeat() -> None:

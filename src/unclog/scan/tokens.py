@@ -1,31 +1,22 @@
-"""Token counting primitives.
+"""Token counting.
 
 Uses tiktoken's ``cl100k_base`` encoding as a close approximation to
-Claude's tokenizer — Anthropic does not publish theirs for Claude 3+.
+Claude's tokenizer — Anthropic doesn't publish theirs for Claude 3+.
 Over-counts natural language by a few percent and under-counts
-structured JSON; close enough to drive tier thresholds and the
-share-based decisions the hero/treemap expose.
+structured JSON; close enough to drive the baseline the hero shows and
+the per-item savings the picker surfaces.
 
-A content-hash cache avoids re-tokenizing identical strings within a
-scan (the same CLAUDE.md is read once; the same skill description may
-be encountered per-scope during ``--all-projects``).
+A per-instance content-hash cache avoids re-tokenizing identical
+strings within one scan.
 """
 
 from __future__ import annotations
 
 import hashlib
-from functools import lru_cache
-from typing import Protocol
 
 import tiktoken
 
 DEFAULT_ENCODING = "cl100k_base"
-
-
-class TokenCounter(Protocol):
-    """Anything that can turn text into a token count."""
-
-    def count(self, text: str) -> int: ...
 
 
 class TiktokenCounter:
@@ -47,18 +38,3 @@ class TiktokenCounter:
         total = len(self._encoding.encode(text, disallowed_special=()))
         self._cache[key] = total
         return total
-
-
-@lru_cache(maxsize=1)
-def _default_counter() -> TiktokenCounter:
-    return TiktokenCounter()
-
-
-def count_tokens(text: str) -> int:
-    """Count tokens with the process-wide default counter."""
-    return _default_counter().count(text)
-
-
-def reset_default_counter() -> None:
-    """Discard the cached default counter (test helper)."""
-    _default_counter.cache_clear()

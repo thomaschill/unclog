@@ -86,8 +86,8 @@ class Section:
     only have one section and want the historical look.
 
     ``preselected`` holds indices into ``findings`` that should start
-    checked. Curate sections always pass ``set()`` (consent is
-    per-item); detector sections pass auto-checked indices.
+    checked. The curate flow always passes ``set()`` so every deletion
+    is an explicit opt-in.
     """
 
     title: str

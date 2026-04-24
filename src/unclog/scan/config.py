@@ -39,12 +39,7 @@ class ProjectRecord:
 
 @dataclass(frozen=True)
 class ClaudeConfig:
-    """Parsed ``~/.claude.json``.
-
-    Only the MCP server names are retained — every other field unclog
-    reads (command/args/env, per-project session metadata, startup
-    counts) was used by pre-0.2 detectors that have since been removed.
-    """
+    """Parsed ``~/.claude.json`` — the MCP server names at both scopes."""
 
     mcp_servers: frozenset[str] = frozenset()
     projects: Mapping[Path, ProjectRecord] = field(

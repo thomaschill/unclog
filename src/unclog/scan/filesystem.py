@@ -1,8 +1,9 @@
 """Enumerate skills, agents, and slash commands from a Claude Code install.
 
-Frontmatter parsing is intentionally line-oriented: recognises string-scalar
-keys only (``name``, ``description``). Good enough for the picker's token
-estimate; richer YAML lands when we actually need it.
+Frontmatter parsing is intentionally line-oriented: recognises
+string-scalar keys only (``name``, ``description``). Good enough for the
+picker's token estimate; richer YAML support can be added when a field
+we care about actually requires it.
 """
 
 from __future__ import annotations

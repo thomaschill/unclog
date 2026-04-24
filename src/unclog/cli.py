@@ -7,7 +7,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
-from unclog import __version__
+from unclog import __repo_url__, __version__
 from unclog.app import run_scan
 from unclog.findings.curate import build_curate_findings
 from unclog.scan.config import ConfigParseError
@@ -103,6 +103,4 @@ def _handle_unexpected_error(console: Console, exc: BaseException) -> None:
     )
     if error_log is not None:
         console.print(f"[dim]Full trace: {error_log}[/dim]")
-    console.print(
-        "[dim]Please report this at https://github.com/thomaschill/unclog/issues[/dim]"
-    )
+    console.print(f"[dim]Please report this at {__repo_url__}/issues[/dim]")

@@ -18,6 +18,7 @@ from typing import Protocol
 from rich.console import Console, Group, RenderableType
 from rich.text import Text
 
+from unclog import __repo_url__
 from unclog.apply.runner import ApplyResult, apply_findings
 from unclog.findings.base import Finding
 from unclog.ui.chrome import rounded_panel, status_glyph
@@ -209,7 +210,7 @@ def _render_result(
 
 
 _STAR_SENTINEL_NAME = "star_shown"
-_STAR_REPO_URL = "github.com/thomaschill/unclog"
+_STAR_REPO_DISPLAY = __repo_url__.removeprefix("https://")
 
 
 def _maybe_show_star_line(result: ApplyResult, console: Console) -> None:
@@ -231,7 +232,7 @@ def _maybe_show_star_line(result: ApplyResult, console: Console) -> None:
 
     star_line = Text()
     star_line.append("★ Enjoying unclog? Star it on GitHub: ", style=DIM)
-    star_line.append(_STAR_REPO_URL, style=f"dim {ACCENT}")
+    star_line.append(_STAR_REPO_DISPLAY, style=f"dim {ACCENT}")
     console.print("")
     console.print(star_line)
 
