@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from unclog.ui.hero import (
-    DEFAULT_TREEMAP_WIDTH,
-    render_hero,
-    render_treemap,
-)
+from unclog.ui.hero import CompositionRow, render_hero, render_top_contributors
 from unclog.ui.theme import ACCENT
 
 
@@ -30,86 +26,52 @@ def _rgb(hex_colour: str) -> str:
 
 
 def test_hero_renders_number_in_plain_english() -> None:
-    """Hero is plain English: ``N,NNN tokens in your Claude Code baseline``.
-
-    Provenance (session vs filesystem) and unmeasured-MCP footnotes were
-    removed in the v0.1 UX pass — the composition block below carries
-    that information via per-row token counts vs ``—`` placeholders.
-    """
-    baseline = {
-        "estimated_tokens": 42180,
-        "tokens_source": "session+tiktoken",
-        "attributed_tokens": 41000,
-        "unmeasured_sources": 0,
-    }
-    out = _capture(render_hero(baseline))
+    out = _capture(render_hero(42180))
     assert "42,180" in out
     assert "tokens in your Claude Code baseline" in out
 
 
 def test_hero_number_uses_accent_colour() -> None:
-    baseline = {
-        "estimated_tokens": 8000,
-        "tokens_source": "tiktoken",
-        "attributed_tokens": 8000,
-        "unmeasured_sources": 0,
-    }
-    ansi = _capture_ansi(render_hero(baseline))
+    ansi = _capture_ansi(render_hero(8000))
     assert _rgb(ACCENT) in ansi
 
 
-def test_hero_does_not_surface_provenance_jargon() -> None:
-    """Regression: hero must not carry jargon footnotes.
-
-    The old hero tacked on "from files (no session yet)" and
-    "N MCP unmeasured" — both were opaque to users and are now
-    represented by the composition block instead.
-    """
-    baseline = {
-        "estimated_tokens": 80000,
-        "tokens_source": "tiktoken",
-        "attributed_tokens": 70000,
-        "unmeasured_sources": 3,
-    }
-    plain = _capture(render_hero(baseline))
-    assert "MCP unmeasured" not in plain
-    assert "no session" not in plain
-    assert "from files" not in plain
-
-
-def test_treemap_renders_segment_labels_for_large_shares() -> None:
+def test_top_contributors_renders_aggregate_and_mcp_rows() -> None:
     composition = [
-        {"source": "mcp:github", "tokens": 8000},
-        {"source": "global:CLAUDE.md", "tokens": 1200},
-        {"source": "skills:descriptions (n=22)", "tokens": 800},
+        CompositionRow(kind="mcp", label="github", tokens=8000),
+        CompositionRow(kind="skills", label="22 skills", tokens=1200),
+        CompositionRow(kind="agents", label="5 agents", tokens=800),
     ]
-    out = _capture(render_treemap(composition, width=DEFAULT_TREEMAP_WIDTH))
-    # Display-layer translates ``mcp:<name>`` to ``mcp <name>`` for
-    # readability; machine-readable ``source`` stays intact in JSON.
+    out = _capture(render_top_contributors(composition))
     assert "mcp github" in out
-    # ``skills:descriptions (n=22)`` → ``22 skills`` in the friendly label.
     assert "22 skills" in out
-    # Legend shows exact counts for all entries.
+    assert "5 agents" in out
     assert "8,000 tok" in out
     assert "1,200 tok" in out
     assert "800 tok" in out
 
 
-def test_treemap_skips_unmeasured_entries() -> None:
+def test_top_contributors_includes_scope_label() -> None:
     composition = [
-        {"source": "mcp:github", "tokens": 5000},
-        {"source": "mcp:notion", "tokens": None},
+        CompositionRow(
+            kind="mcp",
+            label="notion",
+            tokens=3000,
+            scope_label="project:/Users/tom/proj",
+        ),
     ]
-    out = _capture(render_treemap(composition))
-    assert "mcp github" in out
-    assert "notion" not in out
+    out = _capture(render_top_contributors(composition))
+    assert "project:/Users/tom/proj" in out
 
 
-def test_treemap_empty_when_nothing_measurable() -> None:
-    out = _capture(render_treemap([{"source": "mcp:notion", "tokens": None}]))
+def test_top_contributors_empty_composition() -> None:
+    out = _capture(render_top_contributors([]))
     assert "no measurable composition" in out
 
 
-
-
-
+def test_top_contributors_collapses_overflow() -> None:
+    composition = [
+        CompositionRow(kind="mcp", label=f"m{i}", tokens=100 - i) for i in range(7)
+    ]
+    out = _capture(render_top_contributors(composition))
+    assert "+2 more" in out

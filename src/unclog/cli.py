@@ -48,18 +48,18 @@ def root(
     console = Console()
     try:
         state = run_scan()
-        render_header(state, console)
-        curate = build_curate_findings(state)
-        if not curate:
+        findings = build_curate_findings(state)
+        render_header(state, findings, console)
+        if not findings:
             console.print(
                 "[dim]Nothing to curate — no agents, skills, or MCP servers found.[/dim]"
             )
             return
         run_interactive(
-            curate,
+            findings,
             claude_home=state.claude_home,
             console=console,
-            baseline_tokens=baseline_tokens(state),
+            baseline_tokens=baseline_tokens(findings),
         )
     except (typer.Exit, typer.Abort, typer.BadParameter, SystemExit):
         raise
