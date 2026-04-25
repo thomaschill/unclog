@@ -55,7 +55,7 @@ from rich.text import Text
 
 from unclog.findings.base import Finding
 from unclog.ui.chrome import hint_bar, rounded_panel
-from unclog.ui.theme import ACCENT, DIM
+from unclog.ui.theme import ACCENT, DIM, SEVERITY_BAD
 
 # Category → (short badge label, badge colour). Each finding type is
 # rendered with a consistent badge so the user can scan the picker by
@@ -133,6 +133,24 @@ def _format_tokens(value: int | None) -> Text:
 
 def _format_scope(kind: str) -> Text:
     return Text(f"{kind:>7}", style=DIM)
+
+
+def _format_title(finding: Finding, *, is_cursor: bool) -> Text:
+    """Render the title cell with optional usage hint for MCPs.
+
+    Non-MCP rows show just the title. MCP rows append the 30-day
+    invocation count in dim, and an ``[unused]`` badge in red when
+    the count is zero — drawing the eye to servers that haven't earned
+    their context budget recently.
+    """
+    title_style = f"bold {ACCENT}" if is_cursor else "default"
+    text = Text(finding.title, style=title_style)
+    if finding.invocations is None:
+        return text
+    text.append(f"  · {finding.invocations:,} in 30d", style=DIM)
+    if finding.invocations == 0:
+        text.append("  [unused]", style=f"bold {SEVERITY_BAD}")
+    return text
 
 
 def _build_rows(sections: list[Section]) -> tuple[list[_Row], list[Finding]]:
@@ -330,8 +348,7 @@ def _build_frame(
         badge_text = Text(badge_label, style=f"bold {badge_colour}")
         tokens_text = _format_tokens(finding.token_savings)
         scope_text = _format_scope(finding.scope.kind)
-        title_style = f"bold {ACCENT}" if is_cursor else "default"
-        title_text = Text(finding.title, style=title_style)
+        title_text = _format_title(finding, is_cursor=is_cursor)
         table.add_row(cursor_bar, marker_text, badge_text, tokens_text, scope_text, title_text)
 
     # Position indicator: count selectable rows only — headers are

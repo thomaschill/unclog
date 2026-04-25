@@ -8,18 +8,27 @@ preselection translation, and bulk selection helpers.
 
 from __future__ import annotations
 
+from rich.console import Console
+
 from unclog.findings.base import Action, Finding, Scope
 from unclog.ui.picker import (
     Section,
     _build_rows,
     _FindingRow,
     _first_selectable,
+    _format_title,
     _HeaderRow,
     _initial_selected,
     _last_selectable,
     _move_cursor,
     _State,
 )
+
+
+def _render_text(renderable: object) -> str:
+    console = Console(record=True, width=120, color_system=None)
+    console.print(renderable)
+    return console.export_text()
 
 
 def _f(fid: str, ftype: str = "agent_inventory", tokens: int | None = None) -> Finding:
@@ -184,3 +193,49 @@ def test_deselect_section_clears_only_that_section() -> None:
     state.deselect_section(rows, section_idx=1)
     # Section B (flat 2, 3) cleared; section A untouched.
     assert state.selected == {0, 1}
+
+
+# -- _format_title (MCP usage badges) --------------------------------------
+
+
+def _mcp(name: str, invocations: int | None) -> Finding:
+    return Finding(
+        id=f"mcp:{name}",
+        type="mcp_inventory",
+        title=name,
+        scope=Scope(kind="global"),
+        action=Action(primitive="remove_mcp", server_name=name),
+        invocations=invocations,
+    )
+
+
+def test_format_title_appends_invocation_count_for_mcp() -> None:
+    text = _render_text(_format_title(_mcp("notion", 35), is_cursor=False))
+    assert "notion" in text
+    assert "35 in 30d" in text
+
+
+def test_format_title_marks_zero_invocations_as_unused() -> None:
+    text = _render_text(_format_title(_mcp("polymarket-docs", 0), is_cursor=False))
+    assert "polymarket-docs" in text
+    assert "0 in 30d" in text
+    assert "[unused]" in text
+
+
+def test_format_title_omits_usage_for_non_mcp() -> None:
+    """Agents/skills/commands carry invocations=None — no suffix at all."""
+    finding = Finding(
+        id="agent:reviewer",
+        type="agent_inventory",
+        title="reviewer",
+        scope=Scope(kind="global"),
+        action=Action(primitive="delete_file"),
+        invocations=None,
+    )
+    text = _render_text(_format_title(finding, is_cursor=False)).strip()
+    assert text == "reviewer"
+
+
+def test_format_title_thousands_separator_for_busy_servers() -> None:
+    text = _render_text(_format_title(_mcp("github", 1234), is_cursor=False))
+    assert "1,234 in 30d" in text
