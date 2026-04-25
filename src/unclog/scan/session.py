@@ -123,9 +123,16 @@ def mcp_session_tokens(session_path: Path | None) -> dict[str, int]:
     if session_path is None:
         return {}
 
+    # Defer TiktokenCounter creation past the early-return — loading the
+    # cl100k_base BPE tables costs ~80ms and is wasted when (as is the
+    # common case on modern Claude Code) no tools array is logged.
+    tools = _first_tools_array(session_path)
+    if not tools:
+        return {}
+
     counter = TiktokenCounter()
     per_server: dict[str, int] = {}
-    for tool in _first_tools_array(session_path):
+    for tool in tools:
         name = tool.get("name")
         if not isinstance(name, str) or not name.startswith(_MCP_TOOL_PREFIX):
             continue
