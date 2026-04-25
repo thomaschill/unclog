@@ -32,4 +32,10 @@ class InstallationState:
     mcp_session_tokens: Mapping[str, int] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Per-MCP tool_use counts across every session JSONL (parent + subagent)
+    # modified in the recent window. Servers with no entry have not been
+    # invoked in that window and the picker flags them as unused.
+    mcp_invocation_counts: Mapping[str, int] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     warnings: tuple[str, ...] = field(default_factory=tuple)

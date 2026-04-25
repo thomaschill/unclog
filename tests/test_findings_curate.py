@@ -17,6 +17,7 @@ def _state_with(
     commands: tuple[Command, ...] = (),
     config: ClaudeConfig | None = None,
     mcp_session_tokens: dict[str, int] | None = None,
+    mcp_invocation_counts: dict[str, int] | None = None,
     claude_home: Path = Path("/tmp/claude"),
 ) -> InstallationState:
     return InstallationState(
@@ -27,6 +28,7 @@ def _state_with(
         skills=skills,
         commands=commands,
         mcp_session_tokens=MappingProxyType(dict(mcp_session_tokens or {})),
+        mcp_invocation_counts=MappingProxyType(dict(mcp_invocation_counts or {})),
     )
 
 
@@ -142,6 +144,28 @@ def test_build_curate_findings_attaches_session_tokens_to_mcp() -> None:
     )
     mcp = next(f for f in findings if f.type == "mcp_inventory")
     assert mcp.token_savings == 4500
+
+
+def test_build_curate_findings_attaches_invocations_to_mcp() -> None:
+    """Every MCP carries its invocation count; missing servers default to 0."""
+    config = ClaudeConfig(mcp_servers=frozenset({"used", "idle"}))
+    findings = build_curate_findings(
+        _state_with(
+            config=config,
+            mcp_invocation_counts={"used": 35},
+        )
+    )
+    by_name = {f.title: f for f in findings if f.type == "mcp_inventory"}
+    assert by_name["used"].invocations == 35
+    assert by_name["idle"].invocations == 0
+
+
+def test_build_curate_findings_leaves_invocations_none_for_non_mcp() -> None:
+    """Agent/skill/command findings don't carry invocation data."""
+    findings = build_curate_findings(
+        _state_with(agents=(_agent("a", "desc"),), skills=(_skill("s", "desc"),))
+    )
+    assert all(f.invocations is None for f in findings if f.type != "mcp_inventory")
 
 
 def test_build_curate_findings_dedupes_mcp_across_projects_preferring_global() -> None:

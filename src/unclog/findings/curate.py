@@ -84,6 +84,9 @@ def _mcp_findings(state: InstallationState) -> list[Finding]:
                 scope=seen[name],
                 action=Action(primitive="remove_mcp", server_name=name),
                 token_savings=tokens if tokens else None,
+                # Default to 0, not None — every declared MCP has a count
+                # (zero invocations is a real, meaningful answer).
+                invocations=state.mcp_invocation_counts.get(name, 0),
             )
         )
     return findings
