@@ -22,7 +22,7 @@ from unclog import __repo_url__
 from unclog.apply.runner import ApplyResult, apply_findings
 from unclog.findings.base import Finding
 from unclog.ui.chrome import rounded_panel, status_glyph
-from unclog.ui.picker import Section, run_rich_multiselect
+from unclog.ui.picker import InvocationView, Section, run_rich_multiselect
 from unclog.ui.theme import ACCENT, DIM, SEVERITY_BAD, SEVERITY_OK
 from unclog.util.paths import claude_paths
 
@@ -36,7 +36,11 @@ class Prompter(Protocol):
     def confirm(self, message: str, default: bool) -> bool: ...
 
     def multiselect_sections(
-        self, title: str, sections: list[Section]
+        self,
+        title: str,
+        sections: list[Section],
+        *,
+        invocation_view: InvocationView | None = None,
     ) -> list[Finding]: ...
 
 
@@ -57,11 +61,20 @@ class RichPrompter:
         return answer.startswith("y")
 
     def multiselect_sections(
-        self, title: str, sections: list[Section]
+        self,
+        title: str,
+        sections: list[Section],
+        *,
+        invocation_view: InvocationView | None = None,
     ) -> list[Finding]:
         if not any(section.findings for section in sections):
             return []
-        return run_rich_multiselect(sections, title=title, console=self._console)
+        return run_rich_multiselect(
+            sections,
+            title=title,
+            console=self._console,
+            invocation_view=invocation_view,
+        )
 
 
 def run_interactive(
@@ -71,8 +84,15 @@ def run_interactive(
     console: Console,
     baseline_tokens: int,
     prompter: Prompter | None = None,
+    invocation_view: InvocationView | None = None,
 ) -> ApplyResult | None:
-    """Run the picker + apply flow. Returns ``None`` when nothing mutates."""
+    """Run the picker + apply flow. Returns ``None`` when nothing mutates.
+
+    ``invocation_view`` is forwarded to the picker so MCP rows can pull
+    invocation counts from a background-loaded source. ``None`` keeps
+    the synchronous behaviour where each ``Finding.invocations`` is
+    already populated.
+    """
     if not curate_findings:
         return None
 
@@ -87,7 +107,9 @@ def run_interactive(
     if not sections:
         return None
 
-    selected = active_prompter.multiselect_sections("Select items to remove", sections)
+    selected = active_prompter.multiselect_sections(
+        "Select items to remove", sections, invocation_view=invocation_view
+    )
     if not selected:
         console.print("[dim]Nothing selected — exiting without changes.[/dim]")
         return None

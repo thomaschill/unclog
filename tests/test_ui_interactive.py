@@ -27,7 +27,11 @@ class FakePrompter:
         return self.confirm_answers.pop(0)
 
     def multiselect_sections(
-        self, title: str, sections: list[Section]
+        self,
+        title: str,
+        sections: list[Section],
+        *,
+        invocation_view: object | None = None,
     ) -> list[Finding]:
         self.multiselect_calls.append((title, sections))
         return list(self.multiselect_answer)
