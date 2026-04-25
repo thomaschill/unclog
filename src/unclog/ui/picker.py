@@ -45,10 +45,11 @@ Keys:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import readchar
-from rich.console import Console, Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
 from rich.table import Table
 from rich.text import Text
@@ -76,6 +77,30 @@ _MIN_VISIBLE_ROWS = 6
 _MAX_VISIBLE_ROWS = 12
 _FRAME_OVERHEAD = 10  # panel borders + header + legend + footer
 _CURSOR_MARGIN = 3  # keep this many rows visible above/below the cursor
+# How often Rich's Live re-renders without a keypress. We need a low
+# floor so background updates (e.g. async-loaded MCP invocations) appear
+# without user input, but anything above ~4 Hz is wasted CPU since the
+# picker is small and rarely changes between keystrokes.
+_AUTO_REFRESH_HZ = 4
+
+
+@dataclass
+class InvocationView:
+    """Mutable, thread-shared MCP invocation counts.
+
+    The picker reads ``counts`` on every redraw. ``None`` means the
+    background walker is still running and the picker shows ``· …``
+    placeholders. Once a thread sets it (an empty dict counts — that's
+    the post-walk "we scanned, found nothing" answer), the picker swaps
+    placeholders for the real ``· N in 30d`` text.
+
+    The single attribute write under CPython's GIL is atomic, so no
+    lock is required. Don't add one; if behaviour ever changes such
+    that a lock *is* required, this comment will be wrong and we'll
+    notice.
+    """
+
+    counts: Mapping[str, int] | None = None
 
 
 @dataclass
@@ -135,22 +160,70 @@ def _format_scope(kind: str) -> Text:
     return Text(f"{kind:>7}", style=DIM)
 
 
-def _format_title(finding: Finding, *, is_cursor: bool) -> Text:
+def _format_title(
+    finding: Finding,
+    *,
+    is_cursor: bool,
+    invocation_view: InvocationView | None = None,
+) -> Text:
     """Render the title cell with optional usage hint for MCPs.
 
     Non-MCP rows show just the title. MCP rows append the 30-day
     invocation count in dim, and an ``[unused]`` badge in red when
     the count is zero — drawing the eye to servers that haven't earned
     their context budget recently.
+
+    When ``invocation_view`` is supplied, the picker reads counts from
+    it (the async path) instead of the static ``Finding.invocations``
+    snapshot. A ``view.counts is None`` means the background walker
+    is still running, and the row shows a ``· …`` placeholder so the
+    user knows data is incoming.
     """
     title_style = f"bold {ACCENT}" if is_cursor else "default"
     text = Text(finding.title, style=title_style)
-    if finding.invocations is None:
+
+    # Non-MCP findings carry invocations=None and never get a suffix.
+    if finding.type != "mcp_inventory":
         return text
-    text.append(f"  · {finding.invocations:,} in 30d", style=DIM)
-    if finding.invocations == 0:
+
+    invocations = _resolve_invocations(finding, invocation_view)
+    if invocations is _LOADING:
+        text.append("  · …", style=DIM)
+        return text
+    if invocations is None:
+        return text  # MCP without any usage signal at all (shouldn't happen today)
+    text.append(f"  · {invocations:,} in 30d", style=DIM)
+    if invocations == 0:
         text.append("  [unused]", style=f"bold {SEVERITY_BAD}")
     return text
+
+
+# Sentinel returned by _resolve_invocations when the background walker
+# hasn't finished yet. Distinguishable from None (no signal at all) and
+# from int (count, including 0).
+_LOADING: object = object()
+
+
+def _resolve_invocations(
+    finding: Finding,
+    view: InvocationView | None,
+) -> int | None | object:
+    """Pick the right invocation count for this MCP finding.
+
+    Resolution order:
+
+    1. If a view is supplied and ``view.counts is None`` → ``_LOADING``.
+    2. If a view is supplied and counts are populated → look up by server
+       name; missing → 0 (the walk completed and didn't see this server).
+    3. No view supplied → fall back to ``Finding.invocations`` (the
+       synchronous path used by tests and any caller that pre-populates).
+    """
+    if view is not None:
+        if view.counts is None:
+            return _LOADING
+        server = finding.action.server_name or finding.title
+        return view.counts.get(server, 0)
+    return finding.invocations
 
 
 def _build_rows(sections: list[Section]) -> tuple[list[_Row], list[Finding]]:
@@ -294,6 +367,7 @@ def _build_frame(
     state: _State,
     title: str,
     visible_rows: int,
+    invocation_view: InvocationView | None = None,
 ) -> RenderableType:
     """Render the picker as panel + hint bar + running-total line.
 
@@ -348,7 +422,7 @@ def _build_frame(
         badge_text = Text(badge_label, style=f"bold {badge_colour}")
         tokens_text = _format_tokens(finding.token_savings)
         scope_text = _format_scope(finding.scope.kind)
-        title_text = _format_title(finding, is_cursor=is_cursor)
+        title_text = _format_title(finding, is_cursor=is_cursor, invocation_view=invocation_view)
         table.add_row(cursor_bar, marker_text, badge_text, tokens_text, scope_text, title_text)
 
     # Position indicator: count selectable rows only — headers are
@@ -415,11 +489,53 @@ def _compute_visible_rows(console: Console) -> int:
     return max(_MIN_VISIBLE_ROWS, min(_MAX_VISIBLE_ROWS, available))
 
 
+class _LiveFrame:
+    """Rich-renderable wrapper that builds a fresh frame per ``__rich_console__``.
+
+    Rich's ``Live`` captures one renderable and re-renders it on every
+    auto-refresh tick. If we passed it a static ``Group``, auto-refresh
+    would just redraw the same pixels. By passing this wrapper instead,
+    each tick rebuilds the picker frame from current state — which lets
+    a background thread mutating ``invocation_view`` show up without a
+    keypress.
+    """
+
+    def __init__(
+        self,
+        rows: list[_Row],
+        flat: list[Finding],
+        state: _State,
+        title: str,
+        console: Console,
+        invocation_view: InvocationView | None,
+    ) -> None:
+        self._rows = rows
+        self._flat = flat
+        self._state = state
+        self._title = title
+        self._console = console
+        self._invocation_view = invocation_view
+
+    def __rich_console__(
+        self, console: Console, options: ConsoleOptions
+    ) -> RenderResult:
+        visible_rows = _compute_visible_rows(self._console)
+        yield _build_frame(
+            self._rows,
+            self._flat,
+            self._state,
+            self._title,
+            visible_rows,
+            self._invocation_view,
+        )
+
+
 def run_rich_multiselect(
     sections: list[Section],
     *,
     title: str,
     console: Console,
+    invocation_view: InvocationView | None = None,
 ) -> list[Finding]:
     """Drive a Rich Live sectioned multiselect picker and return chosen findings.
 
@@ -435,6 +551,13 @@ def run_rich_multiselect(
     ``a``/``n`` operate on the cursor's current section so users can
     sweep one bucket (e.g. "check everything in Curate agents") without
     touching the others. ``A``/``N`` sweep every section at once.
+
+    When ``invocation_view`` is supplied, MCP rows pull their usage
+    counts from it instead of from each ``Finding.invocations``
+    snapshot. ``view.counts is None`` renders ``· …`` placeholders;
+    a populated view renders ``· N in 30d`` and the ``[unused]`` flag.
+    A background thread can mutate ``view.counts`` while the picker is
+    running and the next auto-refresh tick will reflect the change.
     """
     rows, flat = _build_rows(sections)
     if not flat:
@@ -445,13 +568,13 @@ def run_rich_multiselect(
         selected=_initial_selected(sections),
         viewport_top=0,
     )
-    visible_rows = _compute_visible_rows(console)
 
+    frame = _LiveFrame(rows, flat, state, title, console, invocation_view)
     with Live(
-        _build_frame(rows, flat, state, title, visible_rows),
+        frame,
         console=console,
         screen=False,
-        refresh_per_second=30,
+        refresh_per_second=_AUTO_REFRESH_HZ,
         transient=True,
     ) as live:
         while True:
@@ -460,6 +583,7 @@ def run_rich_multiselect(
             except KeyboardInterrupt:
                 return []
 
+            visible_rows = _compute_visible_rows(console)
             match key:
                 case readchar.key.UP | "k":
                     _move_cursor(state, rows, -1)
@@ -494,8 +618,10 @@ def run_rich_multiselect(
                 case readchar.key.CTRL_C:
                     return []
 
-            visible_rows = _compute_visible_rows(console)
-            live.update(_build_frame(rows, flat, state, title, visible_rows))
+            # State mutated → repaint immediately rather than waiting
+            # the auto-refresh interval. Cheap; the frame just
+            # re-evaluates _build_frame.
+            live.refresh()
 
 
-__all__ = ["Section", "run_rich_multiselect"]
+__all__ = ["InvocationView", "Section", "run_rich_multiselect"]

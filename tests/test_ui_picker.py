@@ -239,3 +239,98 @@ def test_format_title_omits_usage_for_non_mcp() -> None:
 def test_format_title_thousands_separator_for_busy_servers() -> None:
     text = _render_text(_format_title(_mcp("github", 1234), is_cursor=False))
     assert "1,234 in 30d" in text
+
+
+# -- InvocationView (async-fed MCP usage) ----------------------------------
+
+
+def _mcp_finding_with_static_count(name: str, count: int) -> Finding:
+    return Finding(
+        id=f"mcp:{name}",
+        type="mcp_inventory",
+        title=name,
+        scope=Scope(kind="global"),
+        action=Action(primitive="remove_mcp", server_name=name),
+        invocations=count,
+    )
+
+
+def test_format_title_renders_loading_placeholder_when_view_counts_is_none() -> None:
+    """View provided but not yet populated → MCP row shows ``· …``."""
+    from unclog.ui.picker import InvocationView
+
+    finding = _mcp_finding_with_static_count("notion", 99)  # static value should be ignored
+    view = InvocationView(counts=None)
+    text = _render_text(_format_title(finding, is_cursor=False, invocation_view=view))
+    assert "·" in text
+    assert "…" in text
+    assert "99 in 30d" not in text  # static fallback must not leak
+
+
+def test_format_title_uses_view_counts_once_view_is_ready() -> None:
+    """Empty dict counts as ready — server missing → 0 (legitimate post-walk answer)."""
+    from unclog.ui.picker import InvocationView
+
+    finding = _mcp_finding_with_static_count("notion", 99)  # static ignored when view ready
+    view = InvocationView(counts={"notion": 12})
+    text = _render_text(_format_title(finding, is_cursor=False, invocation_view=view))
+    assert "12 in 30d" in text
+    assert "[unused]" not in text
+
+
+def test_format_title_view_with_zero_count_marks_unused() -> None:
+    from unclog.ui.picker import InvocationView
+
+    finding = _mcp_finding_with_static_count("ghost", 50)
+    view = InvocationView(counts={})  # walk completed; server not seen anywhere
+    text = _render_text(_format_title(finding, is_cursor=False, invocation_view=view))
+    assert "0 in 30d" in text
+    assert "[unused]" in text
+
+
+def test_format_title_no_view_falls_back_to_static_invocations() -> None:
+    """The synchronous code path (no view passed) still works."""
+    finding = _mcp_finding_with_static_count("notion", 7)
+    text = _render_text(_format_title(finding, is_cursor=False))  # no view kwarg
+    assert "7 in 30d" in text
+
+
+def test_format_title_non_mcp_ignores_view_entirely() -> None:
+    """Agents/skills/commands never get a usage suffix even with a view."""
+    from unclog.ui.picker import InvocationView
+
+    finding = Finding(
+        id="agent:reviewer",
+        type="agent_inventory",
+        title="reviewer",
+        scope=Scope(kind="global"),
+        action=Action(primitive="delete_file"),
+    )
+    view = InvocationView(counts={"reviewer": 100})  # red herring
+    text = _render_text(_format_title(finding, is_cursor=False, invocation_view=view)).strip()
+    assert text == "reviewer"
+
+
+def test_invocation_view_starts_unloaded() -> None:
+    """Default constructor: counts=None signals the picker to render placeholders."""
+    from unclog.ui.picker import InvocationView
+
+    assert InvocationView().counts is None
+
+
+def test_invocation_view_mutation_visible_to_picker_format() -> None:
+    """Mutating view.counts after construction is observed by _format_title.
+
+    This is the contract the async cli flow depends on — the background
+    thread sets counts, and the *next* render picks it up.
+    """
+    from unclog.ui.picker import InvocationView
+
+    view = InvocationView()
+    finding = _mcp_finding_with_static_count("notion", 0)
+    before = _render_text(_format_title(finding, is_cursor=False, invocation_view=view))
+    assert "…" in before
+
+    view.counts = {"notion": 42}  # background thread did its work
+    after = _render_text(_format_title(finding, is_cursor=False, invocation_view=view))
+    assert "42 in 30d" in after
