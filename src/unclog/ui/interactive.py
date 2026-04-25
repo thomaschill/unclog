@@ -1,12 +1,12 @@
 """Interactive curate flow: pick items → confirm → apply → summary.
 
-One sectioned picker lists every agent, skill, and MCP server unclog
-found. The user toggles rows, presses enter, confirms, and the apply
-layer deletes the selected items. Nothing is mutated until the confirm
-clears.
+One sectioned picker lists every agent, skill, slash command, and MCP
+server unclog found. The user toggles rows, presses enter, confirms,
+and the apply layer deletes the selected items. Nothing is mutated
+until the confirm clears.
 
-0.2 dropped the snapshot/undo safety net — every delete is immediate
-and irreversible. The confirm prompt is the only safety gate.
+There is no snapshot or undo — every delete is immediate and
+irreversible. The confirm prompt is the only safety gate.
 """
 
 from __future__ import annotations
@@ -103,7 +103,7 @@ def run_interactive(
 
 
 def _build_picker_sections(curate_findings: list[Finding]) -> list[Section]:
-    """Partition findings into Curate agents / skills / MCPs sections.
+    """Partition findings into Curate agents / skills / commands / MCPs sections.
 
     ``build_curate_findings`` already sorts by token desc; preserving that
     per-type keeps the biggest wins at the top of each section. Empty

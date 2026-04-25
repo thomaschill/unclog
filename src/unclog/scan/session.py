@@ -1,11 +1,16 @@
-"""Parse Claude Code session JSONLs for MCP token attribution.
+"""Locate session JSONLs and (best-effort) attribute MCP schema tokens.
 
-Session JSONLs are the only source of attribution for MCP tokens in 0.2.
-The interesting signal is the first non-empty ``tools`` array in the
-JSONL: each ``mcp__<server>__<tool>`` entry tells us how much a given
-server is costing per turn. Modern Claude Code builds often omit
-schemas, in which case :func:`mcp_session_tokens` returns ``{}`` and the
-picker falls back to ``— tok`` rows.
+Two helpers live here:
+
+- :func:`latest_session_path` / :func:`latest_session_across_projects`
+  find the most recent ``*.jsonl`` for a project or across every
+  project directory.
+- :func:`mcp_session_tokens` reads the first ``tools`` array in a JSONL
+  and tokenizes each ``mcp__<server>__<tool>`` schema. Modern Claude
+  Code builds usually omit the array entirely, in which case the
+  function returns ``{}`` and the picker honestly renders ``— tok`` for
+  every MCP. The full per-MCP cost is not recoverable from session data
+  alone — it lives only inside the running MCP server's schema.
 """
 
 from __future__ import annotations

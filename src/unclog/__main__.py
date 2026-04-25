@@ -1,3 +1,5 @@
+"""Console-script entrypoint — ``unclog`` and ``python -m unclog`` both land here."""
+
 from unclog.cli import app
 
 

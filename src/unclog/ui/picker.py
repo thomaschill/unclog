@@ -14,12 +14,12 @@ repaint loop driven by ``readchar`` for keyboard input. Compared to
   that recomputes as the user toggles, which is the single most
   actionable number when the picker is open.
 
-The picker takes a list of :class:`Section` so a single picker can
-present "Apply N fixes" and "Curate K agents/skills/MCPs" as visually
-separated groups inside one decision surface. Section headers render
-as non-selectable rows; cursor movement skips them. A section with an
-empty title renders without a header — useful for single-section
-callers that want the historical look.
+The picker takes a list of :class:`Section` so the curate flow can
+group agents, skills, commands, and MCPs into visually separated blocks
+inside one decision surface. Section headers render as non-selectable
+rows; cursor movement skips them. A section with an empty title renders
+without a header — useful for single-section callers that want a flat
+list.
 
 Viewport scrolling is done by hand: Rich's Live redraws the full
 renderable each frame, so with 200+ rows we'd overflow the terminal.
@@ -59,7 +59,8 @@ from unclog.ui.theme import ACCENT, DIM
 
 # Category → (short badge label, badge colour). Each finding type is
 # rendered with a consistent badge so the user can scan the picker by
-# colour and see agents/skills/MCPs at a glance without reading rows.
+# colour and see agents/skills/commands/MCPs at a glance without
+# reading every row.
 _CATEGORY_STYLE: dict[str, tuple[str, str]] = {
     "agent_inventory": ("agent", "#60a5fa"),
     "skill_inventory": ("skill", "#2dd4bf"),

@@ -16,9 +16,10 @@ SEVERITY_OK = "#22c55e"
 SEVERITY_BAD = "#ef4444"
 DIM = "#6b7280"
 
-# Treemap gradient — cool palette, teal → slate → deeper teal.
-# Segments wrap around this list by index.
-TREEMAP_GRADIENT: tuple[str, ...] = (
+# Palette for the baseline panel's top-contributors legend. Cool teal →
+# slate → deeper teal so adjacent rows stay distinguishable; consumers
+# wrap around this list by index.
+LEGEND_GRADIENT: tuple[str, ...] = (
     "#14b8a6",
     "#0d9488",
     "#475569",
@@ -29,5 +30,5 @@ TREEMAP_GRADIENT: tuple[str, ...] = (
 
 
 def gradient_colour(index: int) -> str:
-    """Pick the next treemap segment colour, wrapping around the palette."""
-    return TREEMAP_GRADIENT[index % len(TREEMAP_GRADIENT)]
+    """Pick the next legend-row colour, wrapping around the palette."""
+    return LEGEND_GRADIENT[index % len(LEGEND_GRADIENT)]

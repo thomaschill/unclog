@@ -52,7 +52,7 @@ def root(
         render_header(state, findings, console)
         if not findings:
             console.print(
-                "[dim]Nothing to curate — no agents, skills, or MCP servers found.[/dim]"
+                "[dim]Nothing to curate — no agents, skills, commands, or MCP servers found.[/dim]"
             )
             return
         run_interactive(

@@ -20,7 +20,7 @@ unclog
 - Every **agent** in `~/.claude/agents/`, with its token cost.
 - Every **skill** in `~/.claude/skills/`, with its token cost.
 - Every **slash command** in `~/.claude/commands/`, with its token cost.
-- Every **MCP server** declared in `~/.claude.json` (global and per-project), with its measured session-token cost when available.
+- Every **MCP server** declared in `~/.claude.json` (global and per-project). Per-MCP token cost isn't available from session data, so the picker shows `— tok`; this is honest, not a bug.
 - A **baseline** — the total tokens loaded before you type a single message.
 
 ## Remove what's costing you

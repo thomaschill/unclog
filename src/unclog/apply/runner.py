@@ -1,4 +1,4 @@
-"""Apply a list of findings. No snapshot — irreversible by design in 0.2."""
+"""Apply a list of findings. No snapshot — irreversible by design."""
 
 from __future__ import annotations
 
