@@ -1,4 +1,11 @@
-"""Scan orchestration — build an :class:`InstallationState` from disk."""
+"""Scan orchestration — build an :class:`InstallationState` from disk.
+
+Deliberately fast: enumerates the filesystem, parses ``~/.claude.json``,
+peeks at the latest session JSONL for any MCP token attribution, and
+returns. The expensive 30-day MCP-invocation walk lives in
+:mod:`unclog.scan.session` and is launched separately on a background
+thread by the CLI so the picker can mount before it finishes.
+"""
 
 from __future__ import annotations
 
@@ -11,11 +18,7 @@ from unclog.scan.filesystem import (
     enumerate_commands,
     enumerate_skills,
 )
-from unclog.scan.session import (
-    latest_session_across_projects,
-    mcp_invocation_counts,
-    mcp_session_tokens,
-)
+from unclog.scan.session import latest_session_across_projects, mcp_session_tokens
 from unclog.state import InstallationState
 from unclog.util.paths import ClaudePaths, claude_paths
 
@@ -46,6 +49,8 @@ def _scan(paths: ClaudePaths, warnings: list[str]) -> InstallationState:
         agents=enumerate_agents(paths.agents_dir),
         commands=enumerate_commands(paths.commands_dir),
         mcp_session_tokens=MappingProxyType(mcp_session_tokens(session_path)),
-        mcp_invocation_counts=mcp_invocation_counts(paths.projects_dir),
+        # mcp_invocation_counts is left empty here — the heavy 30-day
+        # walk is launched on a background thread by cli.py so the
+        # picker can render before it finishes.
         warnings=tuple(warnings),
     )

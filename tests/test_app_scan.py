@@ -136,47 +136,14 @@ def test_run_scan_attributes_mcp_tokens_from_latest_session(
     assert "Read" not in state.mcp_session_tokens
 
 
-def test_run_scan_counts_mcp_invocations_across_session_jsonls(
+def test_run_scan_does_not_perform_invocation_walk(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """run_scan stays fast: the 30-day MCP-invocation walk is now
+    launched on a background thread by the CLI. State leaves
+    mcp_invocation_counts empty until the walker completes."""
     home = _build_minimal_home(tmp_path)
-    project_session_dir = home / "projects" / "-Users-tom-draper"
-    project_session_dir.mkdir(parents=True)
-    parent = project_session_dir / "session.jsonl"
-    parent.write_text(
-        json.dumps(
-            {
-                "type": "assistant",
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "tool_use", "id": "1", "name": "mcp__github__list_repos"},
-                        {"type": "tool_use", "id": "2", "name": "mcp__github__list_repos"},
-                    ],
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    subagent = project_session_dir / "session" / "subagents" / "agent-1.jsonl"
-    subagent.parent.mkdir(parents=True)
-    subagent.write_text(
-        json.dumps(
-            {
-                "type": "assistant",
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "tool_use", "id": "3", "name": "mcp__notion__create"},
-                    ],
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
 
     state = run_scan()
-    assert dict(state.mcp_invocation_counts) == {"github": 2, "notion": 1}
+    assert dict(state.mcp_invocation_counts) == {}
