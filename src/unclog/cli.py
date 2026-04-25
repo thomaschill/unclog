@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+import threading
+import traceback
 from pathlib import Path
 
 import typer
@@ -11,8 +14,10 @@ from unclog import __repo_url__, __version__
 from unclog.app import run_scan
 from unclog.findings.curate import build_curate_findings
 from unclog.scan.config import ConfigParseError
+from unclog.scan.session import mcp_invocation_counts
 from unclog.ui.interactive import run_interactive
 from unclog.ui.output import baseline_tokens, render_header
+from unclog.ui.picker import InvocationView
 from unclog.util.paths import claude_paths
 
 app = typer.Typer(
@@ -55,11 +60,20 @@ def root(
                 "[dim]Nothing to curate — no agents, skills, commands, or MCP servers found.[/dim]"
             )
             return
+        invocation_view = InvocationView()
+        thread = threading.Thread(
+            target=_populate_invocation_view,
+            args=(invocation_view, claude_paths().projects_dir),
+            daemon=True,
+            name="unclog-mcp-walker",
+        )
+        thread.start()
         run_interactive(
             findings,
             claude_home=state.claude_home,
             console=console,
             baseline_tokens=baseline_tokens(findings),
+            invocation_view=invocation_view,
         )
     except (typer.Exit, typer.Abort, typer.BadParameter, SystemExit):
         raise
@@ -78,6 +92,27 @@ def root(
     except Exception as exc:
         _handle_unexpected_error(console, exc)
         raise typer.Exit(code=1) from exc
+
+
+def _populate_invocation_view(view: InvocationView, projects_dir: Path) -> None:
+    """Background-thread target: run the 30-day MCP walk and publish results.
+
+    On any unexpected exception the thread degrades gracefully: it logs
+    a one-line warning to stderr and sets ``view.counts = {}`` so the
+    picker stops showing ``· …`` placeholders. Treating a crash as
+    "we scanned and saw nothing" is honest about the data gap and
+    prevents the UI from getting stuck.
+    """
+    try:
+        view.counts = mcp_invocation_counts(projects_dir)
+    except Exception as exc:  # last line of defence for the picker UI
+        print(
+            f"unclog: MCP invocation walk failed ({type(exc).__name__}: {exc}); "
+            f"showing servers without usage data.",
+            file=sys.stderr,
+        )
+        traceback.print_exc(file=sys.stderr)
+        view.counts = {}
 
 
 def _handle_unexpected_error(console: Console, exc: BaseException) -> None:
